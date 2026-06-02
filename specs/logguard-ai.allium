@@ -1,0 +1,294 @@
+-- allium: 3
+-- logguard-ai.allium
+
+-- Scope: AI-driven error detection and analysis on OpenSearch logs
+-- Includes: Periodic error polling, fingerprint-based deduplication, LLM analysis,
+--           Google Chat notification with exponential retry, GitLab source links
+-- Excludes:
+--   - Log ingestion (owned by production Spring Boot services writing to OpenSearch)
+--   - WARN and other non-ERROR log levels (MVP scope; WARN planned post-MVP, sharing
+--     the deduplication_window but routed to a dedicated notification channel)
+--   - GitLab API auto-discovery (no fallback when app_name has no GitLabRepository mapping)
+--   - Admin UI or management API (all configuration via config files/environment variables)
+--   - Authentication and user management
+-- Persistence: embedded database (e.g. H2) for failed notifications
+-- Dependencies: None
+
+------------------------------------------------------------
+-- External Entities
+------------------------------------------------------------
+
+external entity OpenSearch {
+    reachable: Boolean
+}
+
+external entity GeminiLLM {
+    available: Boolean
+    unavailability_reason: String?
+}
+
+external entity GoogleChatWebhook {
+    url: String
+}
+
+------------------------------------------------------------
+-- Value Types
+------------------------------------------------------------
+
+-- Deduplication key derived from an ErrorLog.
+-- Two errors with the same fingerprint and different KBO numbers are considered
+-- the same error and suppressed within the deduplication window.
+
+value ErrorFingerprint {
+    exception_type: String
+    throwing_method: String       -- class + method of the first own-code frame in the stack trace
+    stack_trace_sequence: String  -- full stack trace with tenant-specific data (KBO, IDs) stripped
+}
+
+-- Result of LLM analysis. When the LLM is unavailable, summary, root_cause
+-- and suggested_fix are absent; the notification is sent with raw error
+-- details and a note explaining the unavailability.
+
+value LLMAnalysis {
+    llm_available: Boolean
+    summary: String?
+    root_cause: String?
+    suggested_fix: String?
+    unavailability_reason: String?
+}
+
+-- A resolved link to a specific line in a GitLab source file.
+-- Only generated for stack frames whose class name matches one of own_code_package_prefixes.
+
+value GitLabLink {
+    class_name: String
+    line_number: Integer
+    url: String
+}
+
+------------------------------------------------------------
+-- Entities and Variants
+------------------------------------------------------------
+
+-- Configuration: maps an application name to its GitLab repository URL and source branch.
+-- Managed via config files. Lookup is by app_name; falls back to no links
+-- when no mapping exists.
+
+entity GitLabRepository {
+    app_name: String
+    repo_url: String
+    source_branch: String    -- e.g. "main", "develop"; configurable per repository
+}
+
+-- Persistent cursor tracking the end of the last successful poll window.
+-- Never advanced when OpenSearch is unreachable, enabling automatic catch-up.
+-- consecutive_poll_failures counts uninterrupted failures; resets to 0 on any
+-- successful poll. A degradation alert fires when it first reaches the threshold.
+
+entity PollCheckpoint {
+    last_successful_poll_at: Timestamp
+    consecutive_poll_failures: Integer
+}
+
+-- A single ERROR-level log entry retrieved from OpenSearch.
+-- Fields map directly to _source.structured and _source.kubernetes.
+
+entity ErrorLog {
+    exception_type: String        -- structured.error.type
+    error_message: String         -- structured.error.message
+    stack_trace: String           -- structured.error.stack_trace
+    service_name: String          -- structured.service.name
+    app_name: String              -- kubernetes.labels.appName
+    team: String                  -- kubernetes.namespace_labels.vdab_be_team
+    environment: String           -- kubernetes.namespace_labels.vdab_be_environment
+    severity: String              -- structured.log.level (e.g. ERROR)
+    occurred_at: Timestamp        -- @timestamp
+}
+
+-- Records that a fingerprint was analysed, suppressing duplicates for the window.
+
+entity DeduplicationRecord {
+    fingerprint: ErrorFingerprint
+    first_seen_at: Timestamp
+    expires_at: Timestamp
+}
+
+-- A notification ready to be sent to Google Chat.
+-- Retried on each subsequent poll cycle until delivered.
+-- Persisted (persisted_at set) after max_delivery_attempts to survive restarts.
+
+entity Notification {
+    error_log: ErrorLog
+    analysis: LLMAnalysis
+    gitlab_links: List<GitLabLink>
+    status: pending | delivered | failed
+    attempt_count: Integer
+    failure_reason: String?
+    persisted_at: Timestamp?
+
+    transitions status {
+        pending -> delivered
+        pending -> failed
+        failed -> pending
+        terminal: delivered
+    }
+}
+
+------------------------------------------------------------
+-- Config
+------------------------------------------------------------
+
+config {
+    poll_interval: Duration = 1.hour
+    deduplication_window: Duration = 24.hours
+    max_delivery_attempts: Integer = 3
+    max_consecutive_poll_failures: Integer = 10    -- sends a degradation alert when threshold is first reached
+    own_code_package_prefixes: List<String>        -- e.g. ["com.vdab", "be.vdab"] — frames matching any prefix get GitLab links
+}
+
+------------------------------------------------------------
+-- Rules
+------------------------------------------------------------
+
+-- Poll OpenSearch for new ERROR-level entries since the last successful poll.
+-- When OpenSearch is reachable, all new entries are handed off for processing
+-- and the cursor is advanced. When unreachable the cursor is not advanced,
+-- so the next poll automatically covers the missed window.
+
+rule PollForErrors {
+    when: checkpoint: PollCheckpoint.last_successful_poll_at + config.poll_interval <= now
+    requires: OpenSearch.reachable
+    let new_errors = ErrorLogs where occurred_at > checkpoint.last_successful_poll_at
+    ensures:
+        for error in new_errors:
+            ErrorDetected(error)
+    ensures: checkpoint.last_successful_poll_at = now
+    ensures: checkpoint.consecutive_poll_failures = 0
+
+    @guidance
+        -- Advance last_successful_poll_at only after all ErrorDetected events
+        -- have been emitted, so a crash mid-poll does not lose entries.
+}
+
+rule HandleOpenSearchUnreachable {
+    when: checkpoint: PollCheckpoint.last_successful_poll_at + config.poll_interval <= now
+    requires: not OpenSearch.reachable
+    ensures:
+        checkpoint.consecutive_poll_failures = checkpoint.consecutive_poll_failures + 1
+        OpenSearchPollFailed(at: now)
+        if checkpoint.consecutive_poll_failures = config.max_consecutive_poll_failures:
+            OpenSearchDegradationDetected(consecutive_failures: checkpoint.consecutive_poll_failures)
+
+    @guidance
+        -- Log the failure with reason. Do not advance last_successful_poll_at.
+        -- The next scheduled poll will query from the same checkpoint,
+        -- catching up on all errors logged during the outage.
+        -- OpenSearchDegradationDetected fires once: exactly when the failure count first
+        -- reaches the threshold. Recovery (a successful poll) resets the counter to 0,
+        -- so the alert fires again only after another uninterrupted run of failures.
+}
+
+-- An error whose fingerprint already exists in DeduplicationRecord with an
+-- unexpired entry is silently discarded. No notification is produced.
+
+rule ProcessNewError {
+    when: ErrorDetected(error)
+    let fingerprint = ErrorFingerprint(
+        exception_type: error.exception_type,
+        throwing_method: first_own_code_frame(error.stack_trace, config.own_code_package_prefixes),
+        stack_trace_sequence: strip_tenant_data(error.stack_trace)
+    )
+    let active_records = DeduplicationRecords where fingerprint = fingerprint and expires_at > now
+    requires: active_records.count = 0
+    ensures: DeduplicationRecord.created(
+        fingerprint: fingerprint,
+        first_seen_at: now,
+        expires_at: now + config.deduplication_window
+    )
+    ensures: ErrorReadyForAnalysis(error, fingerprint)
+
+    @guidance
+        -- first_own_code_frame returns the class.method of the first stack frame
+        -- whose class name starts with any of config.own_code_package_prefixes.
+        -- strip_tenant_data removes KBO numbers and other per-tenant identifiers
+        -- from the stack trace so two occurrences of the same error for different
+        -- tenants produce the same fingerprint.
+}
+
+-- Send the error to Gemini for analysis. If Gemini is unavailable, produce an
+-- LLMAnalysis that records the unavailability so the notification still ships
+-- with raw error details.
+
+rule AnalyseError {
+    when: ErrorReadyForAnalysis(error, fingerprint)
+    let analysis =
+        if GeminiLLM.available:
+            analyse_with_llm(error)
+        else:
+            LLMAnalysis(
+                llm_available: false,
+                unavailability_reason: GeminiLLM.unavailability_reason ?? "unknown"
+            )
+    let repo = GitLabRepository{app_name: error.app_name}
+    let own_frames = own_code_frames(error.stack_trace, config.own_code_package_prefixes)
+    let links = build_gitlab_links(own_frames, repo)
+    ensures: Notification.created(
+        error_log: error,
+        analysis: analysis,
+        gitlab_links: links,
+        status: pending,
+        attempt_count: 0
+    )
+
+    @guidance
+        -- analyse_with_llm calls Gemini with exception_type, error_message, stack_trace,
+        -- service_name, app_name, team and environment; returns an LLMAnalysis value.
+        -- own_code_frames returns all stack frames whose class name starts with
+        -- config.own_code_package_prefix, in order.
+        -- build_gitlab_links resolves each frame to a GitLabLink using repo.repo_url and
+        -- repo.source_branch, converting class names to source paths
+        -- (e.g. com.vdab.MyClass → src/main/java/com/vdab/MyClass.java) and appending
+        -- the line number. When repo is null (no GitLabRepository mapping for the app),
+        -- gitlab_links is empty.
+}
+
+-- Attempt delivery of a pending notification to Google Chat.
+-- The implementation emits DeliverySucceeded or DeliveryFailed depending on the outcome.
+
+rule DeliverNotification {
+    when: notification: Notification.status becomes pending
+    ensures: DeliveryAttempted(notification)
+
+    @guidance
+        -- POST the notification to the Google Chat webhook. On HTTP 200, emit
+        -- DeliverySucceeded(notification). On any error, emit DeliveryFailed(notification, reason).
+        -- Use exponential backoff between attempts (e.g. 10s, 20s, 40s) at the call site.
+}
+
+rule NotificationDeliverySucceeded {
+    when: DeliverySucceeded(notification)
+    requires: notification.status = pending
+    ensures: notification.status = delivered
+}
+
+rule NotificationDeliveryFailed {
+    when: DeliveryFailed(notification, reason)
+    requires: notification.status = pending
+    ensures:
+        notification.failure_reason = reason
+        notification.attempt_count = notification.attempt_count + 1
+        if notification.attempt_count >= config.max_delivery_attempts:
+            notification.status = failed
+            notification.persisted_at = now
+}
+
+-- At the start of each poll cycle, reset any persisted failed notifications
+-- back to pending so they are retried.
+
+rule RetryPersistedNotifications {
+    when: _: PollCheckpoint.last_successful_poll_at + config.poll_interval <= now
+    for notification in Notifications where status = failed and persisted_at != null:
+        ensures: notification.status = pending
+        ensures: notification.attempt_count = 0
+}
+
