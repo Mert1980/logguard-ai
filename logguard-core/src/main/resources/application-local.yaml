@@ -1,0 +1,22 @@
+# Local demo profile — active with: -Dspring.profiles.active=local
+# Run the demo: GEMINI_API_KEY=<your-key> ./mvnw -pl logguard-core spring-boot:run -Dspring-boot.run.profiles=local
+
+logguard:
+  poll-interval: PT30S          # fast polling for demo visibility
+  own-code-package-prefixes:
+    - "be.vdab.logguard.demo"
+  open-search:
+    uri: http://localhost:9200
+    index-name: "demo-logs"
+  gemini:
+    api-key: ${GEMINI_API_KEY}  # export GEMINI_API_KEY=<your-key>
+    model: gemini-2.0-flash
+  # No google-chat config needed — ConsoleNotificationAdapter is active in local profile
+  gitlab-repositories:
+    - app-name: "logguard-demo-app"
+      repo-url: "https://gitlab.example.com/vdab/logguard-demo-app"
+      source-branch: "main"
+
+logging:
+  level:
+    be.vdab.logguard: DEBUG
