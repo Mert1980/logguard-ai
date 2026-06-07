@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Pull values from application.yaml into Logback -->
+    <springProperty name="OPENSEARCH_URL"   source="demo.opensearch.url"      defaultValue="http://localhost:9200"/>
+    <springProperty name="INDEX_NAME"       source="demo.opensearch.index-name" defaultValue="demo-logs"/>
+    <springProperty name="APP_NAME"         source="demo.app.name"            defaultValue="logguard-demo-app"/>
+    <springProperty name="SERVICE_NAME"     source="demo.app.service-name"    defaultValue="demo-service"/>
+    <springProperty name="TEAM"             source="demo.app.team"            defaultValue="platform"/>
+    <springProperty name="ENVIRONMENT"      source="demo.app.environment"     defaultValue="local"/>
+
+    <!-- Console appender for normal output -->
+    <appender name="CONSOLE" class="ch.qos.logback.core.ConsoleAppender">
+        <encoder>
+            <pattern>%d{HH:mm:ss.SSS} [%thread] %-5level %logger{36} — %msg%n</pattern>
+        </encoder>
+    </appender>
+
+    <!-- OpenSearch appender — ships ERROR events to OpenSearch with Kubernetes-style fields -->
+    <appender name="OPENSEARCH" class="be.vdab.logguard.demo.appender.OpenSearchLogAppender">
+        <openSearchUrl>${OPENSEARCH_URL}</openSearchUrl>
+        <indexName>${INDEX_NAME}</indexName>
+        <appName>${APP_NAME}</appName>
+        <serviceName>${SERVICE_NAME}</serviceName>
+        <team>${TEAM}</team>
+        <environment>${ENVIRONMENT}</environment>
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>ERROR</level>
+        </filter>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+        <appender-ref ref="OPENSEARCH"/>
+    </root>
+
+    <logger name="be.vdab.logguard.demo" level="DEBUG"/>
+</configuration>

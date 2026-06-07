@@ -1,0 +1,20 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: logguard-demo-app
+  threads:
+    virtual:
+      enabled: true
+
+# Values used by logback-spring.xml to configure the OpenSearchLogAppender
+demo:
+  opensearch:
+    url: http://localhost:9200
+    index-name: demo-logs
+  app:
+    name: logguard-demo-app
+    service-name: demo-service
+    team: platform
+    environment: local
