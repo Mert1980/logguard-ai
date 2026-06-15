@@ -2,16 +2,19 @@
 -- logguard-ai.allium
 
 -- Scope: AI-driven error detection and analysis on OpenSearch logs
--- Includes: Periodic error polling, fingerprint-based deduplication, LLM analysis,
---           Google Chat notification with exponential retry, GitLab source links
+-- MVP:      local LLM, terminal output, no GitLab links
+-- Post-MVP: Gemini API, Google Chat delivery, GitLab source links, team-based routing
+--
+-- Includes: Periodic error polling, three-state fingerprint deduplication with
+--           occurrence escalation, LLM analysis, won't-fix suppression,
+--           terminal output (MVP) / Google Chat notification (post-MVP)
 -- Excludes:
 --   - Log ingestion (owned by production Spring Boot services writing to OpenSearch)
---   - WARN and other non-ERROR log levels (MVP scope; WARN planned post-MVP, sharing
---     the deduplication_window but routed to a dedicated notification channel)
---   - GitLab API auto-discovery (no fallback when app_name has no GitLabRepository mapping)
+--   - WARN and other non-ERROR log levels (post-MVP; will share deduplication_window)
+--   - GitLab source links (post-MVP — requires service registry config)
 --   - Admin UI or management API (all configuration via config files/environment variables)
 --   - Authentication and user management
--- Persistence: embedded database (e.g. H2) for failed notifications
+-- Persistence: embedded database (e.g. H2) for deduplication state and (post-MVP) failed notifications
 -- Dependencies: None
 
 ------------------------------------------------------------
@@ -22,11 +25,15 @@ external entity OpenSearch {
     reachable: Boolean
 }
 
-external entity GeminiLLM {
+-- MVP: local LLM (e.g. Ollama). Post-MVP: Gemini API.
+-- [POST-MVP LANDMINE] When switching to Gemini, exclude ErrorLog.vdab_authorization
+-- from the LLM payload — it contains VDAB LDAP identities that must stay on-prem.
+external entity LLM {
     available: Boolean
     unavailability_reason: String?
 }
 
+-- Post-MVP only.
 external entity GoogleChatWebhook {
     url: String
 }
@@ -56,19 +63,22 @@ value ErrorFingerprint {
                                   -- distinct bugs into the same fingerprint.
 }
 
--- Result of LLM analysis. When the LLM is unavailable, summary, root_cause
--- and suggested_fix are absent; the notification is sent with raw error
--- details and a note explaining the unavailability.
+-- Three-field output contract. Forces the LLM to name the class, method, and specific
+-- failure rather than producing generic observations.
+-- When the LLM is unavailable, the three analysis fields are absent; the error is
+-- delivered as raw data with an "analysis unavailable" marker.
 
 value LLMAnalysis {
     llm_available: Boolean
-    summary: String?
-    root_cause: String?
-    suggested_fix: String?
+    root_cause: String?           -- one paragraph: what went wrong and why, referencing the specific
+                                  -- be.vdab.* class and method involved
+    likely_location: String?      -- ClassName.method:line (e.g. "LabelV2Config.getForwardingSource:21")
+    suggested_action: String?     -- one paragraph: concrete steps the developer should take to
+                                  -- investigate and fix the issue
     unavailability_reason: String?
 }
 
--- A resolved link to a specific line in a GitLab source file.
+-- Post-MVP only. A resolved link to a specific line in a GitLab source file.
 -- Only generated for stack frames whose class name matches one of own_code_package_prefixes.
 
 value GitLabLink {
@@ -78,12 +88,10 @@ value GitLabLink {
 }
 
 ------------------------------------------------------------
--- Entities and Variants
+-- Entities
 ------------------------------------------------------------
 
--- Configuration: maps an application name to its GitLab repository URL and source branch.
--- Managed via config files. Lookup is by app_name; falls back to no links
--- when no mapping exists.
+-- Post-MVP only. Maps an application name to its GitLab repository URL and source branch.
 
 entity GitLabRepository {
     app_name: String
@@ -92,13 +100,16 @@ entity GitLabRepository {
 }
 
 -- Persistent cursor tracking the end of the last successful poll window.
+-- last_successful_poll_at is null on first run, triggering the lookback prompt.
 -- Never advanced when OpenSearch is unreachable, enabling automatic catch-up.
--- consecutive_poll_failures counts uninterrupted failures; resets to 0 on any
--- successful poll. A degradation alert fires when it first reaches the threshold.
+-- consecutive_poll_failures counts uninterrupted failures; resets to 0 on success.
+-- degradation_started_at is set when the failure threshold is first reached and
+-- cleared on recovery; drives the sticky degradation banner.
 
 entity PollCheckpoint {
-    last_successful_poll_at: Timestamp
+    last_successful_poll_at: Timestamp?   -- null = first run not yet completed
     consecutive_poll_failures: Integer
+    degradation_started_at: Timestamp?    -- non-null while LogGuard is in degraded state
 }
 
 -- A single ERROR-level log entry retrieved from OpenSearch.
@@ -110,7 +121,7 @@ entity ErrorLog {
     stack_trace: String           -- structured.error.stack_trace
     service_name: String          -- structured.service.name
     app_name: String              -- kubernetes.labels.appName
-    team: String                  -- kubernetes.namespace_labels.vdab_be_team
+    team: String                  -- kubernetes.namespace_labels.vdab_be_team (used for post-MVP routing)
     environment: String           -- kubernetes.namespace_labels.vdab_be_environment
     severity: String              -- structured.log.level (e.g. ERROR)
     occurred_at: Timestamp        -- @timestamp
@@ -120,28 +131,37 @@ entity ErrorLog {
                                   -- [POST-MVP LANDMINE] This field MUST be excluded from the LLM
                                   -- payload before any cloud LLM integration (e.g. Gemini API).
                                   -- It contains VDAB LDAP identities that must not leave the
-                                  -- on-prem environment. This is the single biggest data-governance
-                                  -- risk for post-MVP cloud LLM migration. Failure to exclude it
-                                  -- will silently ship internal user identities to a cloud provider.
+                                  -- on-prem environment. Failure to exclude it will silently ship
+                                  -- internal user identities to a cloud provider.
 }
 
--- Records that a fingerprint was analysed, suppressing duplicates for the window.
--- Post-MVP: this entity will gain occurrence_count, last_notified_threshold, and
--- a won't_fix boolean supporting a three-state gate: new / cooling / won't-fix.
--- [DESIGN INVARIANT] When won't-fix suppression is implemented, LogGuard MUST NEVER
--- write to the suppression file. The suppression file is a developer-owned config
--- artifact (format: "hash  # HumanLabel:line"). LogGuard reads it on every poll cycle
--- but has no write authority over it. Automated modification of the suppression file
--- would silently override deliberate developer decisions.
+-- Records that a fingerprint has been seen, enforcing the deduplication window.
+-- Three-state gate:
+--   new:       no active record → analyse and deliver
+--   cooling:   active record, won't_fix=false → increment count, check escalation thresholds
+--   won't-fix: active record, won't_fix=true → label once on re-encounter, then suppress
+--
+-- occurrence_count tracks total hits including suppressed duplicates.
+-- stored_analysis is cached after the initial LLM call and reused for escalation
+-- re-notifications — no fresh LLM call at threshold.
+--
+-- [DESIGN INVARIANT] LogGuard MUST NEVER write to the suppression file.
+-- The suppression file is a developer-owned config artifact.
+-- Format: one entry per line — "hash  # HumanLabel:line"
+-- LogGuard reads it on every poll cycle but has no write authority over it.
+-- Automated modification would silently override deliberate developer decisions.
 
 entity DeduplicationRecord {
     fingerprint: ErrorFingerprint
     first_seen_at: Timestamp
     expires_at: Timestamp
+    occurrence_count: Integer             -- total hits including suppressed duplicates
+    last_notified_threshold: Integer?     -- highest escalation threshold that has fired (10, 100, 1000)
+    won't_fix: Boolean                    -- true when fingerprint hash is in the suppression file
+    stored_analysis: LLMAnalysis?         -- cached after initial LLM call; reused at escalation thresholds
 }
 
--- A notification ready to be sent to Google Chat.
--- Retried on each subsequent poll cycle until delivered.
+-- Post-MVP only. A notification queued for Google Chat delivery with retry.
 -- Persisted (persisted_at set) after max_delivery_attempts to survive restarts.
 
 entity Notification {
@@ -166,21 +186,60 @@ entity Notification {
 ------------------------------------------------------------
 
 config {
-    poll_interval: Duration = 1.hour
+    poll_interval: Duration = 5.minutes       -- MVP default; must be easily configurable
     deduplication_window: Duration = 24.hours
+    escalation_thresholds: List<Integer> = [10, 100, 1000]
+                                              -- occurrence counts that trigger re-notification
+                                              -- 1000 also fires for won't-fix records (volume override)
+    max_consecutive_poll_failures: Integer = 3
+    own_code_package_prefixes: List<String>   -- e.g. ["be.vdab"] — used for stack trace truncation
+                                              -- and GitLab link generation (post-MVP)
+    suppression_file_path: String             -- path to the developer-owned won't-fix list
+                                              -- format per entry: "hash  # HumanLabel:line"
+    -- Post-MVP:
     max_delivery_attempts: Integer = 3
-    max_consecutive_poll_failures: Integer = 10    -- sends a degradation alert when threshold is first reached
-    own_code_package_prefixes: List<String>        -- e.g. ["com.vdab", "be.vdab"] — frames matching any prefix get GitLab links
 }
 
 ------------------------------------------------------------
 -- Rules
 ------------------------------------------------------------
 
--- Poll OpenSearch for new ERROR-level entries since the last successful poll.
+-- On first run (no checkpoint), prompt the developer for a lookback window
+-- before the first poll begins.
+
+rule InitialiseCheckpoint {
+    when: checkpoint: PollCheckpoint.last_successful_poll_at = null
+    ensures: FirstRunLookbackConfirmed()
+
+    @guidance
+        -- Print: "First run detected. Process last [N] hours of history? (default: 24h)"
+        -- Wait for developer input. Accept a number of hours; 0 means start fresh from now.
+        -- Set checkpoint.last_successful_poll_at = now - confirmed_lookback_hours.
+        -- This rule fires once at startup and unblocks PollForErrors.
+}
+
+-- Reload the suppression file at the start of every poll cycle.
+-- Runs before PollForErrors within the same cycle so the loaded list is current.
+
+rule ReloadSuppressionFile {
+    when: _: PollCheckpoint.last_successful_poll_at + config.poll_interval <= now
+    ensures: SuppressionFileReloaded()
+
+    @guidance
+        -- Read config.suppression_file_path before each poll cycle.
+        -- Parse lines of format: "hash  # HumanLabel:line" — hash is the lookup key;
+        -- the comment is human-readable only and does not affect matching.
+        -- If file is absent, treat as empty (no won't-fix entries — not an error).
+        -- If file is unreadable or has a parse error:
+        --   - Keep the previously loaded list in memory
+        --   - Skip the reload
+        --   - Print: "⚠️ Suppression file unreadable — using last known state"
+        -- [DESIGN INVARIANT] LogGuard reads this file but NEVER writes to it.
+}
+
+-- Poll OpenSearch for new ERROR-level entries since the last checkpoint.
 -- When OpenSearch is reachable, all new entries are handed off for processing
--- and the cursor is advanced. When unreachable the cursor is not advanced,
--- so the next poll automatically covers the missed window.
+-- and the cursor is advanced after the full batch is emitted.
 
 rule PollForErrors {
     when: checkpoint: PollCheckpoint.last_successful_poll_at + config.poll_interval <= now
@@ -191,13 +250,21 @@ rule PollForErrors {
             ErrorDetected(error)
     ensures: checkpoint.last_successful_poll_at = now
     ensures: checkpoint.consecutive_poll_failures = 0
+    ensures: checkpoint.degradation_started_at = null
 
     @guidance
         -- [DESIGN INVARIANT] Advance last_successful_poll_at ONLY after ALL ErrorDetected
         -- events for the batch have been emitted — never before, never mid-batch.
-        -- If the process crashes after the cursor advances but before events are emitted,
-        -- those errors are silently lost and will never be analysed. The cursor must be
-        -- the last thing that changes in a successful poll cycle, not the first.
+        -- A crash after cursor advance but before event emission silently loses that batch.
+        --
+        -- If checkpoint.degradation_started_at was set, print the recovery line before polling:
+        -- "🟢 LOGGUARD RECOVERED — polling resumed at [now], catching up from checkpoint"
+        --
+        -- Terminal output grouping for this poll cycle:
+        --   - Buffer results by service_name
+        --   - Print "Analyzing N new errors in [service-name]..." before LLM calls per service
+        --   - Print each service block after all errors for that service are analysed
+        --   - Order service blocks by error count descending
 }
 
 rule HandleOpenSearchUnreachable {
@@ -206,88 +273,200 @@ rule HandleOpenSearchUnreachable {
     ensures:
         checkpoint.consecutive_poll_failures = checkpoint.consecutive_poll_failures + 1
         OpenSearchPollFailed(at: now)
-        if checkpoint.consecutive_poll_failures = config.max_consecutive_poll_failures:
+        if checkpoint.consecutive_poll_failures >= config.max_consecutive_poll_failures
+        and checkpoint.degradation_started_at = null:
+            checkpoint.degradation_started_at = now
             OpenSearchDegradationDetected(consecutive_failures: checkpoint.consecutive_poll_failures)
 
     @guidance
-        -- Log the failure with reason. Do not advance last_successful_poll_at.
-        -- The next scheduled poll will query from the same checkpoint,
-        -- catching up on all errors logged during the outage.
-        -- OpenSearchDegradationDetected fires once: exactly when the failure count first
-        -- reaches the threshold. Recovery (a successful poll) resets the counter to 0,
-        -- so the alert fires again only after another uninterrupted run of failures.
+        -- Do not advance last_successful_poll_at.
+        -- The next scheduled poll queries from the same checkpoint, catching up automatically.
+        -- If checkpoint.degradation_started_at is already set (already degraded), reprint the
+        -- sticky banner on every cycle:
+        -- "🔴 LOGGUARD DEGRADED — OpenSearch unreachable since [degradation_started_at] ([N] failures)"
+        -- Reprinting each cycle prevents the banner scrolling off and creating false calm.
 }
 
--- An error whose fingerprint already exists in DeduplicationRecord with an
--- unexpired entry is silently discarded. No notification is produced.
+-- Three-state dedup gate — Path 1: new fingerprint → analyse and deliver.
 
 rule ProcessNewError {
     when: ErrorDetected(error)
     let fingerprint = ErrorFingerprint(
         exception_type: error.exception_type,
         throwing_method: first_own_code_frame(error.stack_trace, config.own_code_package_prefixes),
-        stack_trace_sequence: strip_tenant_data(error.stack_trace)
+        stack_trace_sequence: normalize_stack_trace(error.stack_trace, config.own_code_package_prefixes)
     )
-    let active_records = DeduplicationRecords where fingerprint = fingerprint and expires_at > now
-    requires: active_records.count = 0
+    let active_record = DeduplicationRecords where fingerprint = fingerprint and expires_at > now
+    requires: active_record = null
+    let is_suppressed = fingerprint_hash(fingerprint) in loaded_suppression_file
     ensures: DeduplicationRecord.created(
         fingerprint: fingerprint,
         first_seen_at: now,
-        expires_at: now + config.deduplication_window
+        expires_at: now + config.deduplication_window,
+        occurrence_count: 1,
+        last_notified_threshold: null,
+        won't_fix: is_suppressed,
+        stored_analysis: null
     )
-    ensures: ErrorReadyForAnalysis(error, fingerprint)
+    ensures: if not is_suppressed: ErrorReadyForAnalysis(error, fingerprint)
+    ensures: if is_suppressed: WontFixEncountered(fingerprint)
 
     @guidance
-        -- first_own_code_frame returns the class.method.LINE_NUMBER of the first stack frame
-        -- whose class name starts with any of config.own_code_package_prefixes.
-        -- If no such frame exists (e.g. Spring startup error, HikariCP, framework-only trace),
-        -- fall back to the topmost frame of the stack trace so distinct framework errors
-        -- do not collapse into a single fingerprint.
+        -- first_own_code_frame: class.method.LINE_NUMBER of the first frame whose class name
+        -- starts with any prefix in own_code_package_prefixes.
+        -- Fallback when no own-code frame exists (Spring startup, HikariCP, static 404s etc.):
+        -- use the topmost frame of the stack trace so distinct framework errors do not
+        -- collapse into a single fingerprint.
         --
-        -- strip_tenant_data scope is LIMITED to structured.message and structured.error.stack_trace.
+        -- normalize_stack_trace: keep only own-code frames (plus topmost fallback if no own-code
+        -- frame exists), strip line numbers from ALL frames in the sequence.
+        -- See ErrorFingerprint [DESIGN INVARIANT] for the line-number asymmetry.
+        --
+        -- strip_tenant_data (applied within normalize_stack_trace to error_message and stack_trace):
         -- Strip: Belgian KBO numbers (0XXX.XXX.XXX), email addresses, LDAP DN fragments in free text.
-        -- Keep: UUIDs/GUIDs (almost always correlation IDs), numeric IDs, port numbers.
-        -- vdab.authorization (the dedicated LDAP field) is OUTSIDE this scope by design —
-        -- it is a separate structured field, not embedded in message or stack_trace.
-        -- See [POST-MVP LANDMINE] on ErrorLog.vdab_authorization for the cloud LLM implication.
+        -- Keep: UUIDs/GUIDs (correlation IDs), numeric IDs, port numbers.
+        -- vdab_authorization is a separate entity field — outside the strip scope by design.
+        -- See [POST-MVP LANDMINE] on ErrorLog.vdab_authorization.
 }
 
--- Send the error to Gemini for analysis. If Gemini is unavailable, produce an
--- LLMAnalysis that records the unavailability so the notification still ships
--- with raw error details.
+-- Three-state dedup gate — Path 2: cooling fingerprint → increment count, check escalation.
+
+rule ProcessCoolingError {
+    when: ErrorDetected(error)
+    let fingerprint = ... -- same derivation as ProcessNewError
+    let active_record = DeduplicationRecords where fingerprint = fingerprint and expires_at > now
+    requires: active_record != null and active_record.won't_fix = false
+    ensures: active_record.occurrence_count = active_record.occurrence_count + 1
+    ensures: OccurrenceIncremented(active_record)
+}
+
+-- Three-state dedup gate — Path 3: won't-fix fingerprint within cooling window → silent.
+-- Count is incremented to enable the 1,000× volume override (CheckEscalationThreshold).
+
+rule ProcessWontFixError {
+    when: ErrorDetected(error)
+    let fingerprint = ... -- same derivation as ProcessNewError
+    let active_record = DeduplicationRecords where fingerprint = fingerprint and expires_at > now
+    requires: active_record != null and active_record.won't_fix = true
+    ensures: active_record.occurrence_count = active_record.occurrence_count + 1
+    ensures: OccurrenceIncremented(active_record)
+    -- No analysis, no terminal output for normal occurrences.
+    -- The 1,000× volume override fires via CheckEscalationThreshold when count reaches that threshold.
+}
+
+-- Won't-fix re-encounter: fingerprint resurfaces after the cooling window expired.
+-- ProcessNewError routes here when the new record is immediately marked won't_fix.
+-- Print the label once; the fresh cooling window suppresses further output.
+
+rule HandleWontFixEncountered {
+    when: WontFixEncountered(fingerprint)
+
+    @guidance
+        -- Print: "⚑ Known / Won't Fix: [HumanLabel]  [hash]"
+        -- One label per cooling window. No LLM analysis.
+        -- The HumanLabel and hash come from the suppression file entry for this fingerprint.
+}
+
+-- Fire an escalation re-notification when occurrence count crosses a threshold.
+-- Thresholds fire for both cooling (won't_fix=false) and won't-fix (won't_fix=true) records,
+-- but won't-fix records only fire at 1,000× (volume override — see DeliverEscalation).
+
+rule CheckEscalationThreshold {
+    when: OccurrenceIncremented(record)
+    let next_threshold = min t in config.escalation_thresholds
+                         where t > (record.last_notified_threshold ?? 0)
+                           and record.occurrence_count >= t
+    requires: next_threshold != null
+    ensures: record.last_notified_threshold = next_threshold
+    ensures: EscalationThresholdReached(record, next_threshold)
+}
+
+-- Deliver escalation re-notification to terminal.
+-- Reuses stored_analysis — no fresh LLM call. Protects local LLM budget.
+
+rule DeliverEscalation {
+    when: EscalationThresholdReached(record, threshold)
+
+    @guidance
+        -- Standard cooling error re-notification:
+        -- "⚠️ Known error [HumanLabel] now seen [threshold]× since [first_seen_at]"
+        -- "   Root cause: [stored_analysis.root_cause]"  (or "no analysis on file" if absent)
+        --
+        -- Won't-fix volume override (fires at 1,000× even for won't_fix=true records):
+        -- "⚠️ Won't-fix error [HumanLabel] now seen 1,000× since [first_seen_at]"
+        -- "   [Your won't-fix decision stands — volume is unusually high]"
+        -- Won't-fix state is NOT cleared after the override fires. The developer must edit
+        -- the suppression file to change their decision. This is a read-only nudge.
+        --
+        -- For won't-fix records: only fire at the 1,000× threshold, not at 10× or 100×.
+        -- (Threshold filtering: requires record.won't_fix = false OR threshold = 1000)
+}
+
+-- Send the error to the LLM for analysis.
+-- MVP: local LLM. Post-MVP: Gemini API (exclude vdab_authorization from payload first).
+-- On LLM failure: deliver raw error data with "analysis unavailable" — never drop silently.
 
 rule AnalyseError {
     when: ErrorReadyForAnalysis(error, fingerprint)
     let analysis =
-        if GeminiLLM.available:
+        if LLM.available:
             analyse_with_llm(error)
         else:
             LLMAnalysis(
                 llm_available: false,
-                unavailability_reason: GeminiLLM.unavailability_reason ?? "unknown"
+                unavailability_reason: LLM.unavailability_reason ?? "unknown"
             )
-    let repo = GitLabRepository{app_name: error.app_name}
-    let own_frames = own_code_frames(error.stack_trace, config.own_code_package_prefixes)
-    let links = build_gitlab_links(own_frames, repo)
-    ensures: Notification.created(
-        error_log: error,
-        analysis: analysis,
-        gitlab_links: links,
-        status: pending,
-        attempt_count: 0
-    )
+    let record = DeduplicationRecord where fingerprint = fingerprint
+    ensures: record.stored_analysis = analysis
+    ensures: ErrorAnalysed(error, analysis, fingerprint)
 
     @guidance
-        -- analyse_with_llm calls Gemini with exception_type, error_message, stack_trace,
-        -- service_name, app_name, team and environment; returns an LLMAnalysis value.
-        -- own_code_frames returns all stack frames whose class name starts with
-        -- config.own_code_package_prefix, in order.
-        -- build_gitlab_links resolves each frame to a GitLabLink using repo.repo_url and
-        -- repo.source_branch, converting class names to source paths
-        -- (e.g. com.vdab.MyClass → src/main/java/com/vdab/MyClass.java) and appending
-        -- the line number. When repo is null (no GitLabRepository mapping for the app),
-        -- gitlab_links is empty.
+        -- LLM prompt instruction frame (confirmed):
+        -- "You are a Java backend engineer. Given this Spring Boot error, identify the most
+        --  likely root cause in the application code. Focus only on be.vdab.* frames.
+        --  Be specific — name the class, method, and what likely went wrong there."
+        --
+        -- LLM payload (MVP — local LLM):
+        --   exception_type, error_message, stack_trace (be.vdab.* frames only, truncated),
+        --   service_name, app_name, vdab_authorization.
+        -- [POST-MVP LANDMINE] Exclude vdab_authorization before switching to cloud LLM.
+        --
+        -- Expected output contract:
+        --   Root cause:      [one paragraph — what went wrong and why, naming the specific
+        --                     be.vdab.* class and method involved]
+        --   Likely location: ClassName.method:line
+        --   Suggested action:[one paragraph — concrete steps to investigate and fix the issue]
+        --
+        -- On LLM failure (timeout, crash, malformed response): set llm_available=false,
+        -- proceed to DeliverToTerminal with raw error data. Never discard the error.
 }
+
+-- MVP: print analysis result to terminal.
+
+rule DeliverToTerminal {
+    when: ErrorAnalysed(error, analysis, fingerprint)
+
+    @guidance
+        -- Output block format (one block per error, within service group):
+        --
+        -- ── orgbeheer-service (4 errors) ──────────────────
+        -- [1/4] NPE@OrderService
+        --   Root cause:      [analysis.root_cause | "analysis unavailable"]
+        --   Likely location: [analysis.likely_location]
+        --   Suggested action:[analysis.suggested_action]
+        --   Fingerprint: NPE@LabelV2Config:21  [a3f9c2b1]
+        --
+        -- The Fingerprint line enables copy-paste suppression: developer copies the hash
+        -- and adds it to config.suppression_file_path to create a won't-fix entry.
+        -- Suppression file format: "a3f9c2b1  # NPE@LabelV2Config:21"
+        --
+        -- Service blocks are printed after all errors for that service are analysed.
+        -- Service blocks are ordered by error count descending within each poll cycle.
+}
+
+------------------------------------------------------------
+-- Post-MVP: Google Chat delivery
+------------------------------------------------------------
 
 -- Attempt delivery of a pending notification to Google Chat.
 -- The implementation emits DeliverySucceeded or DeliveryFailed depending on the outcome.
@@ -328,4 +507,3 @@ rule RetryPersistedNotifications {
         ensures: notification.status = pending
         ensures: notification.attempt_count = 0
 }
-
