@@ -1,17 +1,20 @@
 ---
-stepsCompleted: [1, 2]
+stepsCompleted: [1, 2, 3, 4]
 inputDocuments: []
 session_topic: 'LogGuard AI — automated log intelligence pipeline for OpenSearch'
 session_goals: 'Explore features, design decisions, and architectural approaches for an MVP that detects error logs in OpenSearch, analyzes them via local LLM for root cause identification, and delivers insights to Google Chat (terminal output for MVP)'
 selected_approach: 'user-selected'
 techniques_used: ['Six Thinking Hats', 'Decision Tree Mapping']
-ideas_generated: ['White#1-9 (facts)', 'Black#1 occurrence-count escalation', 'Black#4 framework-frame fallback', 'Black#5 line-number asymmetry', 'Black#6 degradation-alert consumer + sticky banner', 'Black#7 checkpoint-advance timing invariant', 'Black#8 strip_tenant_data allow/deny list + vdab.authorization landmine', 'Red#1 LLM output is the product', 'Red#2 capability doubt', 'Red#3 local LLM is a scaffold', 'Yellow#1 reactive to aware', 'Yellow#2 silent incident prevention', 'Yellow#3 compounding quality flywheel', 'Yellow#4 invisible code review', 'Yellow#5 invisible beneficiary', 'Green#1 warning-level tier', 'Green#2 cross-error pattern analysis', 'Green#3 LLM urgency scoring', 'Green#4 team-based alert routing', 'Green#5 intentional suppression won-t-fix state', 'Green#6 known-error knowledge base', 'Green#7 cross-app temporal correlation', 'Blue#1 prompt design is unresolved core', 'Blue#2 two open prompt questions', 'Blue#3 output contract confirmed', 'Blue#4 instruction frame confirmed']
+ideas_generated: ['White#1-9 (facts)', 'Black#1 occurrence-count escalation', 'Black#4 framework-frame fallback', 'Black#5 line-number asymmetry', 'Black#6 degradation-alert consumer + sticky banner', 'Black#7 checkpoint-advance timing invariant', 'Black#8 strip_tenant_data allow/deny list + vdab.authorization landmine', 'Red#1 LLM output is the product', 'Red#2 capability doubt', 'Red#3 local LLM is a scaffold', 'Yellow#1 reactive to aware', 'Yellow#2 silent incident prevention', 'Yellow#3 compounding quality flywheel', 'Yellow#4 invisible code review', 'Yellow#5 invisible beneficiary', 'Green#1 warning-level tier', 'Green#2 cross-error pattern analysis', 'Green#3 LLM urgency scoring', 'Green#4 team-based alert routing', 'Green#5 intentional suppression won-t-fix state', 'Green#6 known-error knowledge base', 'Green#7 cross-app temporal correlation', 'Blue#1 prompt design is unresolved core', 'Blue#2 two open prompt questions', 'Blue#3 output contract confirmed', 'Blue#4 instruction frame confirmed', 'Tree#1 zero-results fork', 'Tree#2 dedup gate three paths', 'Tree#3 wont-fix re-encounter label', 'Tree#4 LLM failure raw data fallback', 'Tree#5 batch progress signal', 'Tree#6 escalation no-analysis re-notify', 'Tree#7 wont-fix 1000x override', 'Tree#8 startup full backlog', 'Tree#9 backlog threshold cascade', 'Tree#10 wont-fix creation suppression file', 'Tree#11 suppression hot-reload', 'Tree#12 override aftermath state unchanged', 'Tree#13 first-run lookback prompt', 'Tree#14 output grouped by service', 'Tree#15 service ordering by error count', 'Tree#16 unsuppression resume dedup state', 'Tree#17 degradation recovery auto-backlog', 'Tree#18 suppression file corrupt last-known-good']
 context_file: ''
 spec_file: 'specs/logguard-ai.allium'
 session_continued: true
-continuation_date: 2026-06-14
-current_stage: 'Six Thinking Hats — ALL HATS COMPLETE. Decision Tree Mapping not yet started.'
-remaining: ['Decision Tree Mapping']
+continuation_date: 2026-06-15
+current_stage: 'BOTH TECHNIQUES COMPLETE. Moving to organisation.'
+remaining: []
+technique_execution_complete: true
+session_active: false
+workflow_completed: true
 ---
 
 # Brainstorming Session Results
@@ -316,4 +319,277 @@ All six hats completed across two sessions. Summary of hat outcomes:
 
 ---
 
-#### DECISION TREE MAPPING — Not Yet Started
+#### DECISION TREE MAPPING — Completed 2026-06-15
+
+**[Tree #1]**: Zero-Results Fork
+_Concept_: When a poll returns zero error logs, LogGuard does nothing and waits for the next cycle. No "all quiet" message, no counter, no special handling.
+_Novelty_: The dead man's switch responsibility is consciously delegated — to the human watching the terminal for MVP, and to Google Chat's message history timestamp for post-MVP. LogGuard doesn't need to solve this problem at all.
+
+**[Tree #2]**: The Deduplication Gate — Three Paths
+_Concept_: Every fingerprint arriving at the dedup gate follows one of three paths: new (never seen), cooling (seen within 24h), or won't-fix (deliberately suppressed). The won't-fix path does not stay silent — it shows the "won't fix" label after the cooling window expires, giving the human a visible confirmation that the suppression is intentional.
+_Novelty_: The label is the system speaking: "I see this error. I remember you told me not to care about it." That's categorically different from silence, which means "I don't see anything."
+
+**[Tree #3]**: Won't-Fix Re-Encounter
+_Concept_: A won't-fix fingerprint that resurfaces after the cooling window expires gets a single label display per re-encounter — "⚑ Known / Won't Fix: `NPE@OrderService`" — then enters a fresh cooling window. It doesn't fire repeatedly within that window.
+_Novelty_: One reminder per day maximum. The developer is informed without being nagged.
+
+**[Tree #4]**: LLM Failure Path
+_Concept_: When the LLM times out, crashes, or returns a malformed response, LogGuard delivers the raw error data to the terminal with an "analysis unavailable" marker rather than dropping it silently.
+_Novelty_: The pipeline stays honest about its own gaps. A developer sees the error and knows LogGuard saw it too — they just don't get the root cause hint. The error is never invisible.
+
+**[Tree #5]**: Batch Analysis — Sequential with Progress Signal
+_Concept_: When multiple new fingerprints need LLM analysis, LogGuard prints "Analyzing 3 new errors..." before starting, then prints each result as it completes sequentially. The human sees work in progress immediately, not a blank terminal.
+_Novelty_: The progress signal converts latency from "is it frozen?" anxiety into "it's working" confidence — a tiny UX detail with outsized psychological impact on MVP usability.
+
+**[Tree #6]**: Occurrence Escalation — No Analysis on File
+_Concept_: When a cooling error hits a threshold but its stored analysis is "analysis unavailable," LogGuard re-notifies with the volume signal and an honest "no analysis on file" marker. No fresh LLM call — the no-retry rule holds.
+_Novelty_: Volume is still surfaced even when the LLM failed. The developer gets the "this is now an incident" signal without LogGuard pretending it has analysis it doesn't.
+
+**[Tree #7]**: Won't-Fix Volume Override
+_Concept_: A won't-fix fingerprint that hits 1,000× in a single cooling window gets an escalation notification anyway — volume overrides the suppression decision. The won't-fix state is not cleared; the developer is nudged to reconsider, not forced to re-evaluate.
+_Novelty_: The system distinguishes between "I trust your decision" (normal won't-fix behaviour) and "this volume is unusual enough that I'm breaking the silence once."
+
+**[Tree #8]**: Startup Backlog Processing
+_Concept_: When LogGuard starts with a stale checkpoint, it processes the full backlog — every error, full LLM analysis, no shortcuts. The progress signal from Tree #5 covers the human-facing feedback.
+_Novelty_: Completeness over speed. No errors are silently dropped on restart, which matters for a tool whose value proposition is "nothing slips through."
+
+**[Tree #9]**: Backlog Escalation Thresholds
+_Concept_: During backlog catchup, occurrence thresholds (10×, 100×, 1000×) fire in sequence as the count is reconstructed — even for 8-hour-old errors. The developer sees the full escalation history, not a sanitised summary.
+_Novelty_: Catchup is honest about what happened during downtime. If an error became an incident while LogGuard was down, the threshold cascade tells that story when LogGuard comes back up.
+
+**[Tree #10]**: Won't-Fix Creation — Surfaced Identifier
+_Concept_: LogGuard prints a fingerprint identifier alongside every error output. The developer copies it and adds it to a suppression list file. LogGuard reads the file on the next poll cycle. Format: `NPE@OrderService:42  [a3f9c2b1]` — hash as lookup key, human label as comment.
+_Novelty_: The suppression mechanism requires zero tooling — just a text file and a copy-paste. The suppression file remains readable and auditable months later.
+
+**[Tree #11]**: Suppression File — Hot Reload
+_Concept_: LogGuard re-reads the suppression file at the start of every poll cycle. A suppression added while LogGuard is running takes effect within 5 minutes — no restart required.
+_Novelty_: The poll cycle's heartbeat does double duty: it's both the error detection rhythm and the configuration refresh mechanism. Zero extra complexity for a meaningful UX improvement.
+
+**[Tree #12]**: Won't-Fix Override Aftermath
+_Concept_: After the 1,000× override notification fires, the won't-fix state is unchanged. The fingerprint re-enters a fresh 24h cooling window and returns to silence. The developer's suppression file is the single source of truth — LogGuard never modifies it.
+_Novelty_: The override is a read-only nudge. All authority over the won't-fix decision stays with the developer.
+
+**[Tree #13]**: First-Run Lookback Prompt
+_Concept_: On first run, LogGuard detects the absence of a checkpoint file and asks the developer how far back to look — with a sensible default (24h). The developer can adjust up, down, or set to zero to start fresh.
+_Novelty_: First-run is an explicit, informed choice rather than a silent assumption. The developer understands immediately that LogGuard has history and gets to decide how much of it to process.
+
+**[Tree #14]**: Output Grouping by Service
+_Concept_: Terminal output is grouped by `service.name` — all errors from `orgbeheer-service` print together before moving to the next app. Results are buffered per service until that service's analysis completes, then printed as a block.
+_Novelty_: A developer scanning the terminal can immediately see "orgbeheer has 4 errors this cycle" as a unit rather than mentally reconstructing which errors belong to which app from a flat interleaved stream.
+
+**[Tree #15]**: Service Group Ordering
+_Concept_: Service groups are ordered by error count descending — the most affected app prints first. A developer scanning the terminal gets the highest-signal information immediately without scrolling.
+_Novelty_: The output itself performs triage. Before reading a single error, the developer already knows which app needs the most attention this cycle.
+
+**[Tree #16]**: Unsuppression — Resume from Dedup State
+_Concept_: When a hash is removed from the suppression file, LogGuard removes the won't-fix flag and lets the existing dedup record speak. If within the 24h cooling window, the error is treated as cooling. If the window has expired, it's treated as new. No special-case logic needed.
+_Novelty_: Unsuppression is a zero-cost operation — it requires no additional code path, just the absence of a won't-fix check in the existing dedup flow.
+
+**[Tree #17]**: Degradation Recovery
+_Concept_: When polling resumes after degradation, LogGuard prints the recovery line (`🟢 LOGGUARD RECOVERED — polling resumed at 14:35, catching up from checkpoint`) and immediately begins full backlog processing — same behaviour as Tree #8. No additional prompts.
+_Novelty_: Recovery is automatic and consistent. The developer sees the status change and work begins without any interaction required.
+
+**[Tree #18]**: Suppression File — Unreadable
+_Concept_: If the suppression file is unreadable or corrupted at poll time, LogGuard keeps the previously loaded suppression list in memory, skips the reload, and prints a visible warning — `⚠️ Suppression file unreadable — using last known state`. No errors are swallowed, no unexpected re-notifications fire.
+_Novelty_: The last known good state is the safest fallback — the system continues behaving exactly as the developer last configured it while making the problem impossible to miss.
+
+---
+
+#### DECISION TREE MAPPING — COMPLETE (2026-06-15)
+
+| # | Fork | Decision |
+|---|------|----------|
+| 1 | Zero results | Do nothing — human is dead man's switch for MVP |
+| 2 | Dedup gate | Three paths: new / cooling / won't-fix |
+| 3 | Won't-fix re-encounter | Label once per cooling window |
+| 4 | LLM failure | Deliver raw data — "analysis unavailable" |
+| 5 | Batch processing | Sequential with progress signal |
+| 6 | Escalation, no analysis | Re-notify with "no analysis on file" |
+| 7 | Won't-fix 1,000× override | Notify once — state unchanged |
+| 8 | Stale checkpoint startup | Full backlog, full analysis |
+| 9 | Backlog + thresholds | Thresholds fire during catchup |
+| 10 | Won't-fix creation | Suppression file: hash + human label |
+| 11 | Suppression file reload | Hot-reload every poll cycle |
+| 12 | Override aftermath | Won't-fix state remains |
+| 13 | First run | Ask developer for lookback window |
+| 14 | Output grouping | Grouped by service |
+| 15 | Service ordering | By error count descending |
+| 16 | Unsuppression | Resume from dedup state |
+| 17 | Degradation recovery | Auto-process backlog immediately |
+| 18 | Suppression file corrupt | Last known good state + warning |
+
+---
+
+## Idea Organisation and Action Planning
+
+**Completed:** 2026-06-15
+**Total ideas documented:** 44 (26 Six Thinking Hats + 18 Decision Tree forks)
+
+---
+
+### Theme 1 — Pipeline Resilience
+_How LogGuard handles failure, degradation, and restart without losing errors or lying about its own health._
+
+- Tree #4 — LLM failure delivers raw data, never drops errors silently
+- Tree #8/#9 — Full backlog on startup, thresholds cascade honestly during catchup
+- Tree #17 — Degradation recovery auto-processes backlog
+- Tree #18 — Corrupt suppression file falls back to last known good state + warning
+- Black #6 — Sticky degradation banner reprints every cycle while unhealthy
+- Black #7 — Checkpoint advances only after full batch delivery (design invariant)
+
+**Pattern:** Every failure mode is designed to be *visible*. The system breaks loudly, not silently.
+
+---
+
+### Theme 2 — Deduplication Intelligence
+_The three-state dedup system — new, cooling, won't-fix — and all the nuance within it._
+
+- Tree #2 — Three-path dedup gate
+- Tree #3 — Won't-fix label once per re-encounter
+- Tree #6 — Escalation fires even with no analysis on file
+- Tree #7/#12 — 1,000× override is a read-only nudge, not a reset
+- Tree #10/#11/#16 — Suppression file: creation, hot-reload, unsuppression
+- Black #1 — Occurrence count escalation (10×, 100×, 1,000×)
+- Green #5 — Won't-fix as a third dedup state (MVP candidate)
+
+**Pattern:** Three modes of knowing — "new," "cooling," "consciously tolerated." Each produces distinct behaviour.
+
+---
+
+### Theme 3 — Terminal UX
+_What the developer actually sees — and what the output communicates before they read a single word._
+
+- Tree #5 — Progress signal: "Analyzing X new errors..."
+- Tree #14 — Output grouped by `service.name`
+- Tree #15 — Services ordered by error count descending (triage without reading)
+- Blue #3 — Three-field output contract: Root cause / Likely location / Suggested action
+- Blue #4 — Instruction frame forces specificity over generic observations
+- Black #6 — 🔴/🟢 degradation/recovery banners
+
+**Per-error block format (confirmed):**
+```
+── orgbeheer-service ──────────────────────────────
+[1/4] NPE@OrderService
+  Root cause:      Null check missing before calling getForwardingSource()
+  Likely location: LabelV2Config.getForwardingSource (LabelV2Config.java:21)
+  Suggested action: Add null guard on source parameter before line 21
+  Fingerprint: NPE@LabelV2Config:21  [a3f9c2b1]
+```
+
+**Pattern:** The output performs triage passively. The developer knows which app needs attention before reading a single error.
+
+---
+
+### Theme 4 — LLM Quality
+_Getting the analysis right — payload construction, prompt design, and output structure._
+
+- White #2 — `structured.*` is the LLM payload (6–7 fields, discard the rest)
+- White #3 — `vdab.authorization` adds triggering identity context
+- White #4/#9 — Stack trace truncation: keep only `be.vdab.*` frames
+- Black #4 — Framework-frame fallback when no own-code frame exists
+- Black #5 — Line number asymmetry: keep in throwing frame, strip in sequence
+- Black #8 — `strip_tenant_data` allow/deny list + `vdab.authorization` cloud landmine
+- Red #1/#2/#3 — LLM output is the product; local LLM is a scaffold, not the foundation
+- Blue #1/#2 — Prompt design is the highest remaining uncertainty
+
+**Pattern:** LLM quality depends entirely on what it receives and how it's asked. Both are still partially open — prompt validation must happen before pipeline build.
+
+---
+
+### Theme 5 — Startup & Lifecycle
+_Getting LogGuard running, keeping it running, and recovering when it stops._
+
+- Tree #1 — Zero results: do nothing (human is dead man's switch for MVP)
+- Tree #13 — First-run asks for lookback window (default 24h)
+- Tree #8 — Stale checkpoint: full backlog, no shortcuts
+- White #1 — Error index pre-filtering (query = simple time-window scan)
+- Black #7 — Checkpoint advance timing as design invariant
+
+**Pattern:** Lifecycle decisions consistently favour completeness and explicitness over speed and convenience.
+
+---
+
+### Theme 6 — Strategic Value & Post-MVP Roadmap
+_Why LogGuard matters beyond the terminal, and what comes after MVP._
+
+- Yellow #1–5 — From reactive to aware; silent incident prevention; quality flywheel; invisible code review; invisible beneficiary
+- Green #1–4, #6–7 — Warning tier; cross-error patterns; LLM urgency scoring; team routing; knowledge base; temporal correlation
+- White #6–8 — GitLab deep-links deferred (requires service registry)
+- Red #3 — Gemini API is the real production LLM target
+
+**Pattern:** LogGuard's long-term value is cultural, not technical — it changes how developers relate to production.
+
+---
+
+## Implementation Roadmap
+
+### Priority 1 — Validate LLM Quality Before Building (Theme 4)
+
+**Rationale:** Blue #1 identified prompt design as the highest-remaining uncertainty. A running pipeline with hollow output is a failure state per Red #1.
+
+1. Build `structured.*` payload extractor — 6 fields, discard Kubernetes/syslog metadata
+2. Implement stack trace truncation — keep `be.vdab.*` frames only
+3. Implement `strip_tenant_data` allow/deny list (KBO, email → strip; UUID → keep)
+4. **Validate prompt in isolation** — run 10 real error payloads manually against local LLM before wiring into pipeline
+5. Success signal: specific root cause hints (not generic observations) on ≥7 of 10 payloads
+
+### Priority 2 — Core Pipeline Loop (Themes 1 + 5)
+
+1. Poll loop with 5-minute interval + time-window scan on error index
+2. Checkpoint cursor — advances only after full batch delivery (Black #7 invariant)
+3. First-run prompt with 24h default (Tree #13)
+4. Stale checkpoint backlog processing with progress signal (Trees #8, #5)
+5. Consecutive-failure degradation banner + recovery line (Black #6, Tree #17)
+6. LLM failure fallback — raw data + "analysis unavailable" (Tree #4)
+
+### Priority 3 — Deduplication System (Theme 2)
+
+1. Spec delta: add `occurrence_count`, `last_notified_threshold`, `won't_fix` to `DeduplicationRecord`
+2. Fingerprint logic: `throwing_method` with own-code-frame fallback (Black #4); line number asymmetry (Black #5)
+3. Escalation thresholds at 10×, 100×, 1,000× reusing stored analysis
+4. Won't-fix path: label once per re-encounter, 1,000× override as read-only nudge
+5. Suppression file: hash + label format, hot-reload, corruption fallback
+
+### Priority 4 — Terminal Output (Theme 3)
+
+1. Group output by `service.name`, ordered by error count descending
+2. Implement per-error three-field block format
+3. Status indicators: progress, degradation, recovery, won't-fix label, override warning
+
+---
+
+## Spec Landmines — Close Before Coding
+
+Four loud comments required in `specs/logguard-ai.allium`:
+
+| Landmine | Risk if missed |
+|---|---|
+| Checkpoint advances after full batch delivery, not after fetch | Silent data loss on crash |
+| `throwing_method` keeps line number; `stack_trace_sequence` strips it | Normalising both breaks fingerprint collision detection |
+| `vdab.authorization` excluded from `strip_tenant_data` — **cloud LLM blocker** | LDAP identities sent to Gemini API post-MVP |
+| Won't-fix override is read-only — LogGuard never writes to suppression file | Automated suppression overrides developer intent |
+
+---
+
+## Post-MVP Backlog
+
+| Item | Trigger |
+|---|---|
+| Gemini API | After `vdab.authorization` landmine resolved |
+| Google Chat delivery + team routing | First post-MVP milestone |
+| GitLab deep-links | After MVP validates pipeline value |
+| Warning-level tier | After error tier is stable |
+| Cross-app temporal correlation | Medium-term |
+| Dead man's switch (zero-error anomaly) | When moving to unattended operation |
+
+---
+
+## Session Summary
+
+**Two sessions. Two techniques. 44 documented decisions.**
+
+The brainstorming produced not just ideas but **decided architecture** — 18 Decision Tree forks that no longer need to be made during implementation. The Six Thinking Hats ensured nothing was missed: facts, risks, emotions, benefits, creative possibilities, and process all covered.
+
+**Most important single output:** The prompt validation step (Priority 1, Action 4) must happen before any pipeline code is written. Everything else in LogGuard is infrastructure for the LLM output — if the output is hollow, the infrastructure has no value.
+
+**Most important single insight:** LogGuard is not a monitoring tool. It is a quality culture shift engine that operates invisibly and becomes more indispensable the longer it runs — and the quieter it gets.

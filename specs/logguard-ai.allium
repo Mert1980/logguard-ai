@@ -41,8 +41,19 @@ external entity GoogleChatWebhook {
 
 value ErrorFingerprint {
     exception_type: String
-    throwing_method: String       -- class + method of the first own-code frame in the stack trace
-    stack_trace_sequence: String  -- full stack trace with tenant-specific data (KBO, IDs) stripped
+    throwing_method: String       -- class + method + LINE NUMBER of the first own-code frame
+                                  -- [DESIGN INVARIANT] Line number is KEPT here intentionally.
+                                  -- It distinguishes two different bugs in the same method.
+                                  -- e.g. "LabelV2Config.getForwardingSource:21"
+    stack_trace_sequence: String  -- structural sequence of the stack trace, tenant data stripped,
+                                  -- LINE NUMBERS STRIPPED (normalized to Class.method(File.java:_))
+                                  -- [DESIGN INVARIANT] Line numbers are STRIPPED here intentionally.
+                                  -- This makes the fingerprint survive deploys that shift lines
+                                  -- elsewhere in the call path without changing the throwing frame.
+                                  -- WARNING: throwing_method and stack_trace_sequence have OPPOSITE
+                                  -- line-number policies. Do NOT normalise both the same way —
+                                  -- stripping line numbers from throwing_method would collapse
+                                  -- distinct bugs into the same fingerprint.
 }
 
 -- Result of LLM analysis. When the LLM is unavailable, summary, root_cause
@@ -103,9 +114,25 @@ entity ErrorLog {
     environment: String           -- kubernetes.namespace_labels.vdab_be_environment
     severity: String              -- structured.log.level (e.g. ERROR)
     occurred_at: Timestamp        -- @timestamp
+    vdab_authorization: String?   -- vdab.authorization (LDAP DN of the triggering identity,
+                                  -- e.g. "cn=MASTERBDB,ou=users,ou=intern,O=VDAB")
+                                  -- Included in LLM payload for MVP (local LLM keeps data on-prem).
+                                  -- [POST-MVP LANDMINE] This field MUST be excluded from the LLM
+                                  -- payload before any cloud LLM integration (e.g. Gemini API).
+                                  -- It contains VDAB LDAP identities that must not leave the
+                                  -- on-prem environment. This is the single biggest data-governance
+                                  -- risk for post-MVP cloud LLM migration. Failure to exclude it
+                                  -- will silently ship internal user identities to a cloud provider.
 }
 
 -- Records that a fingerprint was analysed, suppressing duplicates for the window.
+-- Post-MVP: this entity will gain occurrence_count, last_notified_threshold, and
+-- a won't_fix boolean supporting a three-state gate: new / cooling / won't-fix.
+-- [DESIGN INVARIANT] When won't-fix suppression is implemented, LogGuard MUST NEVER
+-- write to the suppression file. The suppression file is a developer-owned config
+-- artifact (format: "hash  # HumanLabel:line"). LogGuard reads it on every poll cycle
+-- but has no write authority over it. Automated modification of the suppression file
+-- would silently override deliberate developer decisions.
 
 entity DeduplicationRecord {
     fingerprint: ErrorFingerprint
@@ -166,8 +193,11 @@ rule PollForErrors {
     ensures: checkpoint.consecutive_poll_failures = 0
 
     @guidance
-        -- Advance last_successful_poll_at only after all ErrorDetected events
-        -- have been emitted, so a crash mid-poll does not lose entries.
+        -- [DESIGN INVARIANT] Advance last_successful_poll_at ONLY after ALL ErrorDetected
+        -- events for the batch have been emitted — never before, never mid-batch.
+        -- If the process crashes after the cursor advances but before events are emitted,
+        -- those errors are silently lost and will never be analysed. The cursor must be
+        -- the last thing that changes in a successful poll cycle, not the first.
 }
 
 rule HandleOpenSearchUnreachable {
@@ -208,11 +238,18 @@ rule ProcessNewError {
     ensures: ErrorReadyForAnalysis(error, fingerprint)
 
     @guidance
-        -- first_own_code_frame returns the class.method of the first stack frame
+        -- first_own_code_frame returns the class.method.LINE_NUMBER of the first stack frame
         -- whose class name starts with any of config.own_code_package_prefixes.
-        -- strip_tenant_data removes KBO numbers and other per-tenant identifiers
-        -- from the stack trace so two occurrences of the same error for different
-        -- tenants produce the same fingerprint.
+        -- If no such frame exists (e.g. Spring startup error, HikariCP, framework-only trace),
+        -- fall back to the topmost frame of the stack trace so distinct framework errors
+        -- do not collapse into a single fingerprint.
+        --
+        -- strip_tenant_data scope is LIMITED to structured.message and structured.error.stack_trace.
+        -- Strip: Belgian KBO numbers (0XXX.XXX.XXX), email addresses, LDAP DN fragments in free text.
+        -- Keep: UUIDs/GUIDs (almost always correlation IDs), numeric IDs, port numbers.
+        -- vdab.authorization (the dedicated LDAP field) is OUTSIDE this scope by design —
+        -- it is a separate structured field, not embedded in message or stack_trace.
+        -- See [POST-MVP LANDMINE] on ErrorLog.vdab_authorization for the cloud LLM implication.
 }
 
 -- Send the error to Gemini for analysis. If Gemini is unavailable, produce an
