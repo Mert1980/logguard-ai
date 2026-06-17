@@ -1,0 +1,33 @@
+# LogGuard AI — local development stack.
+# Story 1.1 provides the `opensearch` service only.
+# The `logguard-error-producer` companion-app service is added in Story 1.2.
+#
+# Usage:
+#   docker compose up opensearch        (foreground)
+#   docker compose up -d opensearch     (detached)
+#
+# Security is DISABLED for local dev: OpenSearch serves plain HTTP on :9200 with
+# no auth/TLS. Use DISABLE_SECURITY_PLUGIN=true — the older `plugins.security.disabled`
+# env var stopped taking effect in OpenSearch 2.12+ (opensearch-project/security#4062).
+
+services:
+  opensearch:
+    image: opensearchproject/opensearch:2
+    container_name: logguard-opensearch
+    environment:
+      - discovery.type=single-node
+      - DISABLE_SECURITY_PLUGIN=true
+      - bootstrap.memory_lock=true
+      - "OPENSEARCH_JAVA_OPTS=-Xms512m -Xmx512m"
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ports:
+      - "9200:9200"
+    healthcheck:
+      test: ["CMD-SHELL", "curl -s http://localhost:9200 | grep -q opensearch"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
