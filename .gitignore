@@ -2,3 +2,12 @@ target/
 .vscode/
 .idea
 _bmad/config.user.toml
+
+# H2 file-based persistence — runtime state, not source-controlled (AR-5)
+data/
+
+# Maven wrapper binary (downloaded on first run)
+.mvn/wrapper/maven-wrapper.jar
+
+# Spring Initializr help file
+HELP.md
