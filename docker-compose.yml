@@ -1,10 +1,13 @@
 # LogGuard AI — local development stack.
-# Story 1.1 provides the `opensearch` service only.
-# The `logguard-error-producer` companion-app service is added in Story 1.2.
+#   - `opensearch`              : single-node OpenSearch (Story 1.1)
+#   - `logguard-error-producer` : companion app that writes structured test errors (Story 1.2)
 #
 # Usage:
-#   docker compose up opensearch        (foreground)
-#   docker compose up -d opensearch     (detached)
+#   docker compose up                   (build + start everything, foreground)
+#   docker compose up -d                (detached)
+#   docker compose up opensearch        (just OpenSearch)
+# Then produce a test error:
+#   curl -XPOST http://localhost:8080/trigger-error
 #
 # Security is DISABLED for local dev: OpenSearch serves plain HTTP on :9200 with
 # no auth/TLS. Use DISABLE_SECURITY_PLUGIN=true — the older `plugins.security.disabled`
@@ -31,3 +34,16 @@ services:
       timeout: 5s
       retries: 10
       start_period: 30s
+
+  logguard-error-producer:
+    build: ./logguard-error-producer
+    container_name: logguard-error-producer
+    depends_on:
+      opensearch:
+        condition: service_healthy
+    environment:
+      # Companion talks to OpenSearch over the compose network, not localhost.
+      - OPENSEARCH_URL=http://opensearch:9200
+    ports:
+      # Exposes POST /trigger-error to the host so a developer can produce test errors.
+      - "8080:8080"

@@ -1,0 +1,36 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<configuration>
+    <!-- Spring Boot's standard console output -->
+    <include resource="org/springframework/boot/logging/logback/defaults.xml"/>
+    <include resource="org/springframework/boot/logging/logback/console-appender.xml"/>
+
+    <!--
+      Ships ERROR logs to OpenSearch with the nested field layout LogGuard reads.
+      The bulk target host is driven by OPENSEARCH_URL (default http://localhost:9200);
+      in docker-compose it is set to http://opensearch:9200.
+    -->
+    <appender name="OPENSEARCH" class="be.vdab.logguard.producer.logging.OpenSearchErrorAppender">
+        <url>${OPENSEARCH_URL:-http://localhost:9200}</url>
+        <indexPrefix>logstash-app-openshift-application-springboot_error</indexPrefix>
+        <appName>logguard-error-producer</appName>
+        <team>backend-team</team>
+        <environment>local</environment>
+        <defaultServiceName>orgbeheer-service</defaultServiceName>
+        <defaultAuthorization>cn=TESTUSER,ou=users,ou=intern,O=VDAB</defaultAuthorization>
+        <!-- Only ERROR-level events may reach the error index (the index pattern itself
+             isolates errors in production; LogGuard does not re-filter on log.level). -->
+        <filter class="ch.qos.logback.classic.filter.ThresholdFilter">
+            <level>ERROR</level>
+        </filter>
+    </appender>
+
+    <root level="INFO">
+        <appender-ref ref="CONSOLE"/>
+    </root>
+
+    <!-- Own-code errors are mirrored to OpenSearch (ERROR only, via the appender filter)
+         in addition to the console (additivity=true). -->
+    <logger name="be.vdab.logguard.producer" level="INFO" additivity="true">
+        <appender-ref ref="OPENSEARCH"/>
+    </logger>
+</configuration>
