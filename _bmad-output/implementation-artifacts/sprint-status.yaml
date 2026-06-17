@@ -1,0 +1,74 @@
+# generated: 2026-06-17
+# last_updated: 2026-06-17 (story 1.1 implemented → review; epic-1 → in-progress)
+# project: logguard-ai
+# project_key: NOKEY
+# tracking_system: file-system
+# story_location: _bmad-output/implementation-artifacts
+
+# STATUS DEFINITIONS:
+# ==================
+# Epic Status:
+#   - backlog: Epic not yet started
+#   - in-progress: Epic actively being worked on
+#   - done: All stories in epic completed
+#
+# Epic Status Transitions:
+#   - backlog → in-progress: Automatically when first story is created (via create-story)
+#   - in-progress → done: Manually when all stories reach 'done' status
+#
+# Story Status:
+#   - backlog: Story only exists in epic file
+#   - ready-for-dev: Story file created in stories folder
+#   - in-progress: Developer actively working on implementation
+#   - review: Ready for code review (via Dev's code-review workflow)
+#   - done: Story completed
+#
+# Retrospective Status:
+#   - optional: Can be completed but not required
+#   - done: Retrospective has been completed
+#
+# WORKFLOW NOTES:
+# ===============
+# - Epic transitions to 'in-progress' automatically when first story is created
+# - Stories can be worked in parallel if team capacity allows
+# - Developer typically creates next story after previous one is 'done' to incorporate learnings
+# - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
+
+generated: 2026-06-17
+last_updated: 2026-06-17
+project: logguard-ai
+project_key: NOKEY
+tracking_system: file-system
+story_location: _bmad-output/implementation-artifacts
+
+development_status:
+  # Epic 1: Local Development Environment & Companion App
+  epic-1: in-progress
+  1-1-run-local-opensearch-via-docker-compose: review
+  1-2-companion-app-produces-correctly-structured-test-errors-in-opensearch: backlog
+  epic-1-retrospective: optional
+
+  # Epic 2: LogGuard App — First Working Version
+  epic-2: backlog
+  2-1-scaffold-logguard-ai-and-configure-project-infrastructure: backlog
+  2-2-pollcheckpoint-persistence-and-first-run-lookback-prompt: backlog
+  2-3-opensearch-error-polling-adapter: backlog
+  2-4-terminal-output-service-grouped-count-ordered-per-error-block: backlog
+  2-5-poll-loop-with-checkpoint-advance-invariant: backlog
+  2-6-degradation-detection-sticky-banner-and-recovery-with-auto-backlog: backlog
+  epic-2-retrospective: optional
+
+  # Epic 3: LLM Setup & Integration
+  epic-3: backlog
+  3-1-llm-prompt-validation-gate-tenantdatasanitizer-payload-builder-and-manual-prompt-test: backlog
+  3-2-ollama-llm-adapter-with-structured-output-and-failure-fallback: backlog
+  epic-3-retrospective: optional
+
+  # Epic 4: Fingerprint Deduplication & Won't-Fix Suppression
+  epic-4: backlog
+  4-1-errorfingerprint-computation-with-owncodeframe-detection-and-line-number-asymmetry: backlog
+  4-2-deduplicationrecord-persistence-three-state-gate-and-llm-analysis-caching: backlog
+  4-3-suppressionfile-adapter-with-hot-reload-ordering-guarantee-and-read-only-authority: backlog
+  4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: backlog
+  4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: backlog
+  epic-4-retrospective: optional
