@@ -1,6 +1,9 @@
 spring:
   application:
     name: logguard-ai
+  main:
+    keep-alive: true                # non-web daemon: keep the JVM alive for the @Scheduled poll loop
+                                     # (virtual threads are daemon threads and don't keep it alive)
   threads:
     virtual:
       enabled: true                 # Java 21 Loom — blocking Ollama HTTP calls don't stall the scheduler (AR-12)
