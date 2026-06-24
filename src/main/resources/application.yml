@@ -25,7 +25,7 @@ spring:
           model: ${logguard.ollama.model:gemma3:4b}
 
 logguard:
-  poll-interval: 5m
+  poll-interval: 30s
   deduplication-window: 24h
   escalation-thresholds: [10, 100, 1000]
   max-consecutive-poll-failures: 3
