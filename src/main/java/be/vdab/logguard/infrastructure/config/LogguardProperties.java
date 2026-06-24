@@ -29,8 +29,8 @@ public record LogguardProperties(
 
     public record Ollama(
             @DefaultValue("http://localhost:11434") String baseUrl,
-            @DefaultValue("llama3") String model,
-            @DefaultValue("30s") Duration timeout
+            @DefaultValue("gemma3:4b") String model,
+            @DefaultValue("120s") Duration timeout
     ) {
     }
 
