@@ -64,12 +64,19 @@ public class LlmAdapter implements LlmPort {
         }
     }
 
-    /** Maps the LLM's three-field reply to the domain result; null/blank root cause ⇒ malformed (FR-24). */
+    /** Maps the LLM's three-field reply to the domain result; ANY null/blank field ⇒ malformed (FR-23/24). */
     static LLMAnalysis toAnalysis(RootCauseAnalysis result) {
-        if (result == null || result.rootCause() == null || result.rootCause().isBlank()) {
+        if (result == null
+                || isBlank(result.rootCause())
+                || isBlank(result.likelyLocation())
+                || isBlank(result.suggestedAction())) {
             return LLMAnalysis.unavailable("malformed response");
         }
         return LLMAnalysis.available(result.rootCause(), result.likelyLocation(), result.suggestedAction());
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private String buildPayload(ErrorLog error) {

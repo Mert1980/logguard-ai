@@ -23,7 +23,7 @@ class LogguardAiApplicationTests {
 
 	@Test
 	void logguardPropertiesBindWithDefaults() {
-		assertEquals(Duration.ofMinutes(5), properties.pollInterval());
+		assertEquals(Duration.ofSeconds(30), properties.pollInterval());
 		assertEquals(Duration.ofHours(24), properties.deduplicationWindow());
 		assertIterableEquals(List.of(10, 100, 1000), properties.escalationThresholds());
 		assertEquals(3, properties.maxConsecutivePollFailures());

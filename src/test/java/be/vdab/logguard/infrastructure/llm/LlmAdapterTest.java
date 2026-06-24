@@ -37,4 +37,11 @@ class LlmAdapterTest {
 		assertFalse(result.llmAvailable());
 		assertEquals("malformed response", result.unavailabilityReason());
 	}
+
+	@Test
+	void missingAnyOfTheThreeFieldsIsMalformed() {
+		// FR-23: a reply missing ANY of the three labelled fields is malformed, not a partial analysis.
+		assertFalse(LlmAdapter.toAnalysis(new RootCauseAnalysis("cause", null, "action")).llmAvailable());
+		assertFalse(LlmAdapter.toAnalysis(new RootCauseAnalysis("cause", "loc", "  ")).llmAvailable());
+	}
 }

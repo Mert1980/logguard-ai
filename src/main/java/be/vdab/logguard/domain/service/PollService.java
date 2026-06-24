@@ -7,6 +7,7 @@ import be.vdab.logguard.domain.port.in.PollUseCase;
 import be.vdab.logguard.domain.port.out.LlmPort;
 import be.vdab.logguard.domain.port.out.OpenSearchPort;
 import be.vdab.logguard.domain.port.out.PollCheckpointRepository;
+import be.vdab.logguard.domain.port.out.SuppressionFilePort;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
 
 import java.time.Instant;
@@ -22,9 +23,13 @@ import java.util.stream.Collectors;
  * print grouped by service (most-affected first), then advance the checkpoint. Pure domain — zero Spring
  * annotations (wired as a bean in {@code infrastructure/config}).
  *
- * <p>NOT yet implemented (their own stories): deduplication/fingerprinting (Epic 4 — without it every
+ * <p>The transactional checkpoint-advance boundary (AR-9 / NFR-5) is applied by the
+ * {@code TransactionalPollUseCase} wrapper in {@code infrastructure/config} — this class stays Spring-free.</p>
+ *
+ * <p>NOT yet fully implemented (their own stories): deduplication/fingerprinting (Epic 4 — without it every
  * error triggers an LLM call, vs NFR-4's dedup-before-LLM), escalation, degradation detection (Story 2.6),
- * suppression-file reload (Story 4.3), and the transactional checkpoint-advance boundary (Story 2.5).</p>
+ * and real suppression-file parsing/hot-reload (Story 4.3 — the port is reloaded each cycle here but the
+ * stub returns an empty set, so nothing is suppressed yet).</p>
  */
 public class PollService implements PollUseCase {
 
@@ -32,15 +37,18 @@ public class PollService implements PollUseCase {
     private final PollCheckpointRepository checkpointRepository;
     private final TerminalOutputPort terminalOutput;
     private final LlmPort llmPort;
+    private final SuppressionFilePort suppressionFilePort;
 
     public PollService(OpenSearchPort openSearchPort,
                        PollCheckpointRepository checkpointRepository,
                        TerminalOutputPort terminalOutput,
-                       LlmPort llmPort) {
+                       LlmPort llmPort,
+                       SuppressionFilePort suppressionFilePort) {
         this.openSearchPort = openSearchPort;
         this.checkpointRepository = checkpointRepository;
         this.terminalOutput = terminalOutput;
         this.llmPort = llmPort;
+        this.suppressionFilePort = suppressionFilePort;
     }
 
     @Override
@@ -51,6 +59,12 @@ public class PollService implements PollUseCase {
             return;
         }
         PollCheckpoint checkpoint = current.get();
+
+        // FR-14: reload the suppression list FIRST, before any error in this batch is processed, so a
+        // hot-edited file takes effect within one cycle. Stub returns empty today; Epic 4's dedup gate
+        // will consume the result. The call's ordering is the contract (Story 4.3 also surfaces an
+        // "unreadable → last known state" warning here).
+        suppressionFilePort.loadHashes();
 
         // Snapshot the poll start BEFORE querying; the checkpoint advances to here so errors arriving
         // mid-cycle are picked up next time rather than skipped.

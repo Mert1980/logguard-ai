@@ -5,12 +5,18 @@ import be.vdab.logguard.domain.model.LLMAnalysis;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
 import org.springframework.stereotype.Component;
 
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * The only class permitted to write to {@code System.out} (AR-10). Prints the per-service error block
  * (FR-27/28/30) with the LLM analysis, or "analysis unavailable (reason)" when the LLM was unavailable (FR-24).
  */
 @Component
 public class TerminalOutputAdapter implements TerminalOutputPort {
+
+    /** Matches the topmost stack frame: {@code at <fqcn>.<method>(...)} — group 1 is the FQCN. */
+    private static final Pattern FIRST_FRAME = Pattern.compile("(?m)^\\s*at\\s+([\\w$.]+)\\.[\\w$<>]+\\(");
 
     @Override
     public void printProgress(String serviceName, int count) {
@@ -23,7 +29,7 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
 
     @Override
     public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis) {
-        System.out.println("[" + index + "/" + total + "] " + error.exceptionType());
+        System.out.println("[" + index + "/" + total + "] " + header(error));
         if (analysis.llmAvailable()) {
             System.out.println("  Root cause:       " + dash(analysis.rootCause()));
             System.out.println("  Likely location:  " + dash(analysis.likelyLocation()));
@@ -38,5 +44,29 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
 
     private static String dash(String value) {
         return (value == null || value.isBlank()) ? "-" : value.strip();
+    }
+
+    /** FR-30 header: {@code {ExceptionType}@{ClassName}}; drops the {@code @class} suffix if undetectable. */
+    private static String header(ErrorLog error) {
+        String throwingClass = throwingClass(error.stackTrace());
+        return throwingClass == null ? error.exceptionType() : error.exceptionType() + "@" + throwingClass;
+    }
+
+    /**
+     * Simple class name of the topmost stack frame (the throw site). Refining this to the first own-code
+     * frame for the won't-fix HumanLabel is Epic 4 ({@code FingerprintService}); the block header here
+     * just needs {@code @{ClassName}}.
+     */
+    private static String throwingClass(String stackTrace) {
+        if (stackTrace == null || stackTrace.isBlank()) {
+            return null;
+        }
+        Matcher matcher = FIRST_FRAME.matcher(stackTrace);
+        if (!matcher.find()) {
+            return null;
+        }
+        String fqcn = matcher.group(1);
+        int lastDot = fqcn.lastIndexOf('.');
+        return lastDot >= 0 ? fqcn.substring(lastDot + 1) : fqcn;
     }
 }
