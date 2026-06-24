@@ -1,6 +1,7 @@
 package be.vdab.logguard.infrastructure.config;
 
 import be.vdab.logguard.domain.port.in.PollUseCase;
+import be.vdab.logguard.domain.port.out.LlmPort;
 import be.vdab.logguard.domain.port.out.OpenSearchPort;
 import be.vdab.logguard.domain.port.out.PollCheckpointRepository;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
@@ -17,7 +18,8 @@ public class DomainServiceConfig {
     @Bean
     public PollUseCase pollUseCase(OpenSearchPort openSearchPort,
                                    PollCheckpointRepository checkpointRepository,
-                                   TerminalOutputPort terminalOutput) {
-        return new PollService(openSearchPort, checkpointRepository, terminalOutput);
+                                   TerminalOutputPort terminalOutput,
+                                   LlmPort llmPort) {
+        return new PollService(openSearchPort, checkpointRepository, terminalOutput, llmPort);
     }
 }

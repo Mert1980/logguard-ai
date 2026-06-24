@@ -1,0 +1,128 @@
+package be.vdab.logguard.infrastructure.llm;
+
+import be.vdab.logguard.domain.model.ErrorLog;
+import be.vdab.logguard.domain.model.LLMAnalysis;
+import be.vdab.logguard.domain.port.out.LlmPort;
+import be.vdab.logguard.domain.service.TenantDataSanitizer;
+import be.vdab.logguard.infrastructure.config.LogguardProperties;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.ai.chat.client.ChatClient;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.core.io.ClassPathResource;
+import org.springframework.stereotype.Component;
+
+import java.io.IOException;
+import java.io.UncheckedIOException;
+import java.nio.charset.StandardCharsets;
+import java.util.List;
+
+/**
+ * Calls the local Ollama LLM (Spring AI {@link ChatClient}) to analyse an error and returns the
+ * three-field {@link LLMAnalysis}. Catches everything at this boundary and returns
+ * {@code llmAvailable=false} on any failure (FR-24) — infrastructure exceptions never reach the domain.
+ *
+ * <p>The payload is the FR-20 set: exception type, service, app, triggering LDAP identity, and the
+ * tenant-stripped (FR-21) message + own-code stack frames. The system prompt is loaded from
+ * {@code prompts/llm-analysis.st} (AR-14); the JSON output contract is added by {@code .entity(...)}.</p>
+ */
+@Component
+public class LlmAdapter implements LlmPort {
+
+    private static final Logger log = LoggerFactory.getLogger(LlmAdapter.class);
+    private static final String PROMPT_RESOURCE = "prompts/llm-analysis.st";
+
+    private final ChatClient chatClient;
+    private final TenantDataSanitizer sanitizer = new TenantDataSanitizer();
+    private final List<String> ownCodePrefixes;
+    private final String systemPrompt;
+
+    @Autowired
+    public LlmAdapter(ChatClient.Builder chatClientBuilder, LogguardProperties properties) {
+        this(chatClientBuilder.build(), properties.ownCodePackagePrefixes());
+    }
+
+    /** Package-private — lets tests inject a ChatClient over a stub/throwing ChatModel. */
+    LlmAdapter(ChatClient chatClient, List<String> ownCodePrefixes) {
+        this.chatClient = chatClient;
+        this.ownCodePrefixes = ownCodePrefixes;
+        this.systemPrompt = loadSystemPrompt();
+    }
+
+    @Override
+    public LLMAnalysis analyse(ErrorLog error) {
+        try {
+            RootCauseAnalysis result = chatClient.prompt()
+                    .system(systemPrompt)
+                    .user(buildPayload(error))
+                    .call()
+                    .entity(RootCauseAnalysis.class);
+            return toAnalysis(result);
+        } catch (Exception e) {
+            log.warn("LLM analysis failed for {}: {}", error.exceptionType(), e.getMessage());
+            return LLMAnalysis.unavailable(shortReason(e));
+        }
+    }
+
+    /** Maps the LLM's three-field reply to the domain result; null/blank root cause ⇒ malformed (FR-24). */
+    static LLMAnalysis toAnalysis(RootCauseAnalysis result) {
+        if (result == null || result.rootCause() == null || result.rootCause().isBlank()) {
+            return LLMAnalysis.unavailable("malformed response");
+        }
+        return LLMAnalysis.available(result.rootCause(), result.likelyLocation(), result.suggestedAction());
+    }
+
+    private String buildPayload(ErrorLog error) {
+        return """
+                Exception type: %s
+                Service: %s
+                App: %s
+                Triggering identity (LDAP): %s
+                Error message: %s
+                Stack trace (own-code frames only):
+                %s
+                """.formatted(
+                error.exceptionType(),
+                error.serviceName(),
+                error.appName(),
+                error.vdabAuthorization(),
+                sanitizer.sanitize(error.errorMessage()),
+                sanitizer.sanitize(ownCodeFrames(error.stackTrace())));
+    }
+
+    /** Keep the exception header line plus any frame from a configured own-code package (FR-20). */
+    private String ownCodeFrames(String stackTrace) {
+        if (stackTrace == null || stackTrace.isBlank()) {
+            return "";
+        }
+        String[] lines = stackTrace.split("\\R");
+        StringBuilder kept = new StringBuilder();
+        if (lines.length > 0) {
+            kept.append(lines[0]).append('\n');
+        }
+        for (String line : lines) {
+            if (ownCodePrefixes.stream().anyMatch(line::contains)) {
+                kept.append(line.trim()).append('\n');
+            }
+        }
+        return kept.toString();
+    }
+
+    private static String shortReason(Exception e) {
+        Throwable root = e;
+        while (root.getCause() != null && root.getCause() != root) {
+            root = root.getCause();
+        }
+        String message = root.getMessage();
+        return (message == null || message.isBlank()) ? root.getClass().getSimpleName() : message;
+    }
+
+    private static String loadSystemPrompt() {
+        try {
+            return new String(new ClassPathResource(PROMPT_RESOURCE).getInputStream().readAllBytes(),
+                    StandardCharsets.UTF_8);
+        } catch (IOException e) {
+            throw new UncheckedIOException("Cannot load " + PROMPT_RESOURCE, e);
+        }
+    }
+}

@@ -16,6 +16,13 @@ spring:
   flyway:
     enabled: true
     locations: classpath:db/migration   # empty in this story → "Successfully applied 0 migrations"
+  ai:
+    ollama:
+      # Single source of truth is logguard.ollama.* — Spring AI's Ollama autoconfig reads these.
+      base-url: ${logguard.ollama.base-url:http://localhost:11434}
+      chat:
+        options:
+          model: ${logguard.ollama.model:gemma3:4b}
 
 logguard:
   poll-interval: 5m
@@ -27,8 +34,8 @@ logguard:
   suppression-file-path: ./suppression.txt
   ollama:
     base-url: http://localhost:11434
-    model: llama3
-    timeout: 30s
+    model: gemma3:4b
+    timeout: 120s
   opensearch:
     base-url: http://localhost:9200
     # Matches the index the companion app (Story 1.2) writes to — Story 2.3 needs no change.
