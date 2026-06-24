@@ -11,3 +11,11 @@ data/
 
 # Spring Initializr help file
 HELP.md
+
+# Spring Boot tooling scratch artifacts
+.initializr.json
+.initializr_help.txt
+.sbdeps.pom
+.sbmeta.xml
+.sbparent.pom
+.sbreq.html

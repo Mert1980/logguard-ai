@@ -30,8 +30,8 @@ class LogguardAiApplicationTests {
 		assertIterableEquals(List.of("be.vdab"), properties.ownCodePackagePrefixes());
 		assertEquals("./suppression.txt", properties.suppressionFilePath());
 		assertEquals("http://localhost:11434", properties.ollama().baseUrl());
-		assertEquals("llama3", properties.ollama().model());
-		assertEquals(Duration.ofSeconds(30), properties.ollama().timeout());
+		assertEquals("gemma3:4b", properties.ollama().model());
+		assertEquals(Duration.ofSeconds(120), properties.ollama().timeout());
 		assertEquals("http://localhost:9200", properties.opensearch().baseUrl());
 		assertEquals("logstash-app-openshift-application-springboot_error_*",
 				properties.opensearch().indexPattern());

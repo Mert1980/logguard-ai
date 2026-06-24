@@ -1,8 +1,10 @@
 package be.vdab.logguard.domain.service;
 
 import be.vdab.logguard.domain.model.ErrorLog;
+import be.vdab.logguard.domain.model.LLMAnalysis;
 import be.vdab.logguard.domain.model.PollCheckpoint;
 import be.vdab.logguard.domain.port.in.PollUseCase;
+import be.vdab.logguard.domain.port.out.LlmPort;
 import be.vdab.logguard.domain.port.out.OpenSearchPort;
 import be.vdab.logguard.domain.port.out.PollCheckpointRepository;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
@@ -16,26 +18,29 @@ import java.util.Optional;
 import java.util.stream.Collectors;
 
 /**
- * One poll cycle (minimal Epic-2 core): fetch errors since the checkpoint, print them grouped by
- * service (most-affected first), then advance the checkpoint. Pure domain — zero Spring annotations
- * (wired as a bean in {@code infrastructure/config}).
+ * One poll cycle (minimal Epic-2/3 core): fetch errors since the checkpoint, analyse each with the LLM,
+ * print grouped by service (most-affected first), then advance the checkpoint. Pure domain — zero Spring
+ * annotations (wired as a bean in {@code infrastructure/config}).
  *
- * <p>NOT yet implemented (their own stories): deduplication/fingerprinting (Epic 4), LLM analysis
- * (Epic 3 — errors show "analysis unavailable"), degradation detection (Story 2.6), suppression-file
- * reload (Story 4.3), and the transactional checkpoint-advance boundary (Story 2.5).</p>
+ * <p>NOT yet implemented (their own stories): deduplication/fingerprinting (Epic 4 — without it every
+ * error triggers an LLM call, vs NFR-4's dedup-before-LLM), escalation, degradation detection (Story 2.6),
+ * suppression-file reload (Story 4.3), and the transactional checkpoint-advance boundary (Story 2.5).</p>
  */
 public class PollService implements PollUseCase {
 
     private final OpenSearchPort openSearchPort;
     private final PollCheckpointRepository checkpointRepository;
     private final TerminalOutputPort terminalOutput;
+    private final LlmPort llmPort;
 
     public PollService(OpenSearchPort openSearchPort,
                        PollCheckpointRepository checkpointRepository,
-                       TerminalOutputPort terminalOutput) {
+                       TerminalOutputPort terminalOutput,
+                       LlmPort llmPort) {
         this.openSearchPort = openSearchPort;
         this.checkpointRepository = checkpointRepository;
         this.terminalOutput = terminalOutput;
+        this.llmPort = llmPort;
     }
 
     @Override
@@ -62,11 +67,20 @@ public class PollService implements PollUseCase {
             byService.entrySet().stream()
                     .sorted(Comparator.comparingInt((Map.Entry<String, List<ErrorLog>> e) -> e.getValue().size())
                             .reversed())
-                    .forEach(entry -> terminalOutput.printServiceErrors(entry.getKey(), entry.getValue()));
+                    .forEach(entry -> printServiceGroup(entry.getKey(), entry.getValue()));
         }
-        // FR-26: zero errors -> print nothing (handled above). Advance the checkpoint only after a
-        // successful query + delivery; if findErrorsSince threw, we never reach here (checkpoint stasis).
+        // FR-26: zero errors -> print nothing. Advance the checkpoint only after a successful query +
+        // delivery; if findErrorsSince threw, we never reach here (checkpoint stasis).
         checkpointRepository.save(new PollCheckpoint(
                 pollStart, checkpoint.degradationStartedAt(), checkpoint.consecutivePollFailures()));
+    }
+
+    private void printServiceGroup(String serviceName, List<ErrorLog> errors) {
+        terminalOutput.printProgress(serviceName, errors.size());
+        int index = 1;
+        for (ErrorLog error : errors) {
+            LLMAnalysis analysis = llmPort.analyse(error);
+            terminalOutput.printAnalysis(index++, errors.size(), error, analysis);
+        }
     }
 }
