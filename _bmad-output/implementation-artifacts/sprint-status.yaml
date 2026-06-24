@@ -67,9 +67,10 @@ development_status:
   # Epic 3: LLM Setup & Integration
   epic-3: in-progress
   # 3.1: code artifacts complete (TenantDataSanitizer + tests, 6-field payload, llm-analysis.st,
-  # LLMAnalysis record). BLOCKED on AR-18: the manual ≥10-payload prompt validation gate (≥7/10 must
-  # name a class+method) has NOT been run — running pipeline ≠ validated prompt. Must run before 'done'.
-  3-1-llm-prompt-validation-gate-tenantdatasanitizer-payload-builder-and-manual-prompt-test: in-progress
+  # LLMAnalysis record). AR-18 manual prompt-validation gate WAIVED by team decision 2026-06-24 (hackathon
+  # time pressure); the live demo output serves as the lightweight empirical check — if root-cause lines
+  # come back generic, redesign the prompt in llm-analysis.st. Pending code review (CR).
+  3-1-llm-prompt-validation-gate-tenantdatasanitizer-payload-builder-and-manual-prompt-test: review
   # 3.2: implemented + gap-fixed (malformed = ANY missing field, FR-23). Open item: logguard.ollama.timeout
   # is a dead property — not wired to the Ollama HTTP client. Pending code review (CR).
   3-2-ollama-llm-adapter-with-structured-output-and-failure-fallback: review
