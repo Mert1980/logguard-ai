@@ -40,5 +40,8 @@ logguard:
     base-url: http://localhost:9200
     # Matches the index the companion app (Story 1.2) writes to — Story 2.3 needs no change.
     index-pattern: logstash-app-openshift-application-springboot_error_*
+    # Re-scan this window each cycle so errors made searchable after the query (OpenSearch refresh lag)
+    # are not skipped; Epic 4 dedup removes the resulting harmless double-fetch (D1).
+    refresh-window: 5s
   h2:
     data-dir: ./data

@@ -10,6 +10,7 @@ import be.vdab.logguard.domain.port.out.PollCheckpointRepository;
 import be.vdab.logguard.domain.port.out.SuppressionFilePort;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
 
+import java.time.Duration;
 import java.time.Instant;
 import java.util.Comparator;
 import java.util.LinkedHashMap;
@@ -38,17 +39,20 @@ public class PollService implements PollUseCase {
     private final TerminalOutputPort terminalOutput;
     private final LlmPort llmPort;
     private final SuppressionFilePort suppressionFilePort;
+    private final Duration refreshWindow;
 
     public PollService(OpenSearchPort openSearchPort,
                        PollCheckpointRepository checkpointRepository,
                        TerminalOutputPort terminalOutput,
                        LlmPort llmPort,
-                       SuppressionFilePort suppressionFilePort) {
+                       SuppressionFilePort suppressionFilePort,
+                       Duration refreshWindow) {
         this.openSearchPort = openSearchPort;
         this.checkpointRepository = checkpointRepository;
         this.terminalOutput = terminalOutput;
         this.llmPort = llmPort;
         this.suppressionFilePort = suppressionFilePort;
+        this.refreshWindow = refreshWindow;
     }
 
     @Override
@@ -66,8 +70,8 @@ public class PollService implements PollUseCase {
         // "unreadable → last known state" warning here).
         suppressionFilePort.loadHashes();
 
-        // Snapshot the poll start BEFORE querying; the checkpoint advances to here so errors arriving
-        // mid-cycle are picked up next time rather than skipped.
+        // Snapshot the poll start BEFORE querying; the checkpoint advances to here (minus a refresh
+        // safety-lag) so errors arriving mid-cycle are picked up next time rather than skipped.
         Instant pollStart = Instant.now();
         List<ErrorLog> errors = openSearchPort.findErrorsSince(checkpoint.lastSuccessfulPollAt());
 
@@ -85,8 +89,15 @@ public class PollService implements PollUseCase {
         }
         // FR-26: zero errors -> print nothing. Advance the checkpoint only after a successful query +
         // delivery; if findErrorsSince threw, we never reach here (checkpoint stasis).
+        // D1: subtract a refresh safety-lag so an error made searchable just after this query ran
+        // (OpenSearch refresh latency) is re-queried next cycle instead of skipped. Clamp so the
+        // checkpoint never regresses behind its previous value.
+        Instant advanced = pollStart.minus(refreshWindow);
+        if (advanced.isBefore(checkpoint.lastSuccessfulPollAt())) {
+            advanced = checkpoint.lastSuccessfulPollAt();
+        }
         checkpointRepository.save(new PollCheckpoint(
-                pollStart, checkpoint.degradationStartedAt(), checkpoint.consecutivePollFailures()));
+                advanced, checkpoint.degradationStartedAt(), checkpoint.consecutivePollFailures()));
     }
 
     private void printServiceGroup(String serviceName, List<ErrorLog> errors) {

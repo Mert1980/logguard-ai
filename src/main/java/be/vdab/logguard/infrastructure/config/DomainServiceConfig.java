@@ -22,8 +22,9 @@ public class DomainServiceConfig {
                                    PollCheckpointRepository checkpointRepository,
                                    TerminalOutputPort terminalOutput,
                                    LlmPort llmPort,
-                                   SuppressionFilePort suppressionFilePort) {
+                                   SuppressionFilePort suppressionFilePort,
+                                   LogguardProperties properties) {
         return new PollService(openSearchPort, checkpointRepository, terminalOutput, llmPort,
-                suppressionFilePort);
+                suppressionFilePort, properties.opensearch().refreshWindow());
     }
 }

@@ -36,7 +36,8 @@ public record LogguardProperties(
 
     public record OpenSearch(
             @DefaultValue("http://localhost:9200") String baseUrl,
-            @DefaultValue("logstash-app-openshift-application-springboot_error_*") String indexPattern
+            @DefaultValue("logstash-app-openshift-application-springboot_error_*") String indexPattern,
+            @DefaultValue("5s") Duration refreshWindow
     ) {
     }
 
