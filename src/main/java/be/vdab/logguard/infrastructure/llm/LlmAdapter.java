@@ -16,6 +16,8 @@ import java.io.IOException;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Calls the local Ollama LLM (Spring AI {@link ChatClient}) to analyse an error and returns the
@@ -97,19 +99,31 @@ public class LlmAdapter implements LlmPort {
                 sanitizer.sanitize(ownCodeFrames(error.stackTrace())));
     }
 
-    /** Keep the exception header line plus any frame from a configured own-code package (FR-20). */
+    /** Matches a stack frame line {@code at <fqcn>.<method>(...)}; group 1 is the frame's FQCN. */
+    private static final Pattern FRAME = Pattern.compile("^\\s*at\\s+([\\w$.]+)\\.[\\w$<>]+\\(");
+
+    /** Keep the exception header line plus any frame whose class is in a configured own-code package (FR-20). */
     private String ownCodeFrames(String stackTrace) {
         if (stackTrace == null || stackTrace.isBlank()) {
             return "";
         }
+        List<String> prefixes = ownCodePrefixes.stream()
+                .filter(p -> p != null && !p.isBlank())
+                .toList();
         String[] lines = stackTrace.split("\\R");
         StringBuilder kept = new StringBuilder();
-        if (lines.length > 0) {
-            kept.append(lines[0]).append('\n');
-        }
-        for (String line : lines) {
-            if (ownCodePrefixes.stream().anyMatch(line::contains)) {
-                kept.append(line.trim()).append('\n');
+        // Always keep the first line (the exception header: throwable type + message).
+        kept.append(lines[0].strip()).append('\n');
+        // Keep only "at <fqcn>" frames whose class belongs to an own-code package — match the parsed
+        // class (not substring-anywhere) so prefixes in messages don't false-match, and start at index 1
+        // so the header line is never re-appended.
+        for (int i = 1; i < lines.length; i++) {
+            Matcher matcher = FRAME.matcher(lines[i]);
+            if (matcher.find()) {
+                String fqcn = matcher.group(1);
+                if (prefixes.stream().anyMatch(p -> fqcn.equals(p) || fqcn.startsWith(p + "."))) {
+                    kept.append(lines[i].strip()).append('\n');
+                }
             }
         }
         return kept.toString();
