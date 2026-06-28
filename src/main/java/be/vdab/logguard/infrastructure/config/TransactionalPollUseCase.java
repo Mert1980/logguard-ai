@@ -15,7 +15,9 @@ import org.springframework.transaction.annotation.Transactional;
  *
  * <p>Marked {@link Primary} so {@code PollScheduler} injects this wrapper rather than the raw
  * {@link PollService} bean. Caveat: the transaction is held across the OpenSearch query and the per-error
- * LLM calls — acceptable against local H2 here; revisit once dedup (Epic 4) bounds the per-cycle work.</p>
+ * LLM calls — acceptable against local H2 here; revisit once dedup (Epic 4) bounds the per-cycle work.
+ * Until then a {@code timeoutString} ({@code logguard.poll-transaction-timeout-seconds}, default 600s)
+ * caps one cycle so a large un-deduplicated batch cannot hold a Hikari connection open indefinitely (D2).</p>
  */
 @Component
 @Primary
@@ -28,7 +30,7 @@ public class TransactionalPollUseCase implements PollUseCase {
     }
 
     @Override
-    @Transactional
+    @Transactional(timeoutString = "${logguard.poll-transaction-timeout-seconds:600}")
     public void poll() {
         delegate.poll();
     }

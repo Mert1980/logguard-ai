@@ -26,6 +26,9 @@ spring:
 
 logguard:
   poll-interval: 30s
+  # Hard ceiling (seconds) on one poll cycle's transaction (query + all per-error LLM calls) so a large
+  # un-deduplicated batch can't starve the connection pool indefinitely (D2 / AR-9).
+  poll-transaction-timeout-seconds: 600
   deduplication-window: 24h
   escalation-thresholds: [10, 100, 1000]
   max-consecutive-poll-failures: 3
