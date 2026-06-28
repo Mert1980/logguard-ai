@@ -18,6 +18,9 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
     /** Matches the topmost stack frame: {@code at <fqcn>.<method>(...)} — group 1 is the FQCN. */
     private static final Pattern FIRST_FRAME = Pattern.compile("(?m)^\\s*at\\s+([\\w$.]+)\\.[\\w$<>]+\\(");
 
+    /** Cap the unavailability reason so a long/multi-line message can't blow the aligned block. */
+    private static final int MAX_REASON_LENGTH = 100;
+
     /**
      * FR-31/32/34/35 status indicators. Defined here (never inline literals) per Story 2.4 AC; the
      * emitters land in Story 2.6 (DEGRADED/RECOVERED) and Epic 4 (WONT_FIX/ESCALATION), so these are
@@ -45,7 +48,7 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
             System.out.println("  Likely location:  " + dash(analysis.likelyLocation()));
             System.out.println("  Suggested action: " + dash(analysis.suggestedAction()));
         } else {
-            System.out.println("  Root cause:       analysis unavailable (" + analysis.unavailabilityReason() + ")");
+            System.out.println("  Root cause:       analysis unavailable (" + reason(analysis.unavailabilityReason()) + ")");
             System.out.println("  Likely location:  -");
             System.out.println("  Suggested action: -");
         }
@@ -54,6 +57,17 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
 
     private static String dash(String value) {
         return (value == null || value.isBlank()) ? "-" : value.strip();
+    }
+
+    /** One-line, length-capped unavailability reason; blank ⇒ "reason unknown" (never "()"). */
+    private static String reason(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "reason unknown";
+        }
+        String oneLine = raw.strip().replaceAll("\\s+", " ");
+        return oneLine.length() > MAX_REASON_LENGTH
+                ? oneLine.substring(0, MAX_REASON_LENGTH - 1) + "…"
+                : oneLine;
     }
 
     /** FR-30 header: {@code {ExceptionType}@{ClassName}}; drops the {@code @class} suffix if undetectable. */
