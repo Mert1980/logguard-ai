@@ -18,6 +18,16 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
     /** Matches the topmost stack frame: {@code at <fqcn>.<method>(...)} — group 1 is the FQCN. */
     private static final Pattern FIRST_FRAME = Pattern.compile("(?m)^\\s*at\\s+([\\w$.]+)\\.[\\w$<>]+\\(");
 
+    /**
+     * FR-31/32/34/35 status indicators. Defined here (never inline literals) per Story 2.4 AC; the
+     * emitters land in Story 2.6 (DEGRADED/RECOVERED) and Epic 4 (WONT_FIX/ESCALATION), so these are
+     * intentionally unused until then.
+     */
+    static final String DEGRADED = "🔴";
+    static final String RECOVERED = "🟢";
+    static final String WONT_FIX = "⚑";
+    static final String ESCALATION = "⚠️";
+
     @Override
     public void printProgress(String serviceName, int count) {
         String plural = count == 1 ? "" : "s";
