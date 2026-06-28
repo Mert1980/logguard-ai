@@ -13,6 +13,7 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
@@ -144,9 +145,8 @@ public class LlmAdapter implements LlmPort {
     }
 
     private static String loadSystemPrompt() {
-        try {
-            return new String(new ClassPathResource(PROMPT_RESOURCE).getInputStream().readAllBytes(),
-                    StandardCharsets.UTF_8);
+        try (InputStream in = new ClassPathResource(PROMPT_RESOURCE).getInputStream()) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot load " + PROMPT_RESOURCE, e);
         }
