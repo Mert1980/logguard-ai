@@ -91,12 +91,17 @@ public class LlmAdapter implements LlmPort {
                 Stack trace (own-code frames only):
                 %s
                 """.formatted(
-                error.exceptionType(),
-                error.serviceName(),
-                error.appName(),
-                error.vdabAuthorization(),
-                sanitizer.sanitize(error.errorMessage()),
+                orUnknown(error.exceptionType()),
+                orUnknown(error.serviceName()),
+                orUnknown(error.appName()),
+                orUnknown(error.vdabAuthorization()),
+                orUnknown(sanitizer.sanitize(error.errorMessage())),
                 sanitizer.sanitize(ownCodeFrames(error.stackTrace())));
+    }
+
+    /** Null/blank field ⇒ "unknown" so the LLM payload never carries the literal string "null". */
+    private static String orUnknown(String value) {
+        return (value == null || value.isBlank()) ? "unknown" : value;
     }
 
     /** Matches a stack frame line {@code at <fqcn>.<method>(...)}; group 1 is the frame's FQCN. */

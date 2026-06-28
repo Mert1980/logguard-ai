@@ -58,8 +58,9 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
 
     /** FR-30 header: {@code {ExceptionType}@{ClassName}}; drops the {@code @class} suffix if undetectable. */
     private static String header(ErrorLog error) {
+        String exceptionType = dash(error.exceptionType());   // "-" instead of the literal "null"
         String throwingClass = throwingClass(error.stackTrace());
-        return throwingClass == null ? error.exceptionType() : error.exceptionType() + "@" + throwingClass;
+        return throwingClass == null ? exceptionType : exceptionType + "@" + throwingClass;
     }
 
     /**
