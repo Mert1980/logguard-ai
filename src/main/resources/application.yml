@@ -23,6 +23,12 @@ spring:
       chat:
         options:
           model: ${logguard.ollama.model:gemma3:4b}
+  http:
+    client:
+      # Bridge logguard.ollama.timeout to the HTTP read timeout of the Spring AI Ollama RestClient —
+      # the only Spring-managed HTTP client here (OpenSearch uses its own transport). Without this the
+      # 120s timeout property was dead. P1 / Story 3.2 AC.
+      read-timeout: ${logguard.ollama.timeout:120s}
 
 logguard:
   poll-interval: 30s
