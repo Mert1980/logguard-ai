@@ -25,6 +25,7 @@ public class DomainServiceConfig {
                                    SuppressionFilePort suppressionFilePort,
                                    LogguardProperties properties) {
         return new PollService(openSearchPort, checkpointRepository, terminalOutput, llmPort,
-                suppressionFilePort, properties.opensearch().refreshWindow());
+                suppressionFilePort, properties.opensearch().refreshWindow(),
+                properties.maxConsecutivePollFailures());
     }
 }

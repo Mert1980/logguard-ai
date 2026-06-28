@@ -5,6 +5,7 @@ import be.vdab.logguard.domain.model.LLMAnalysis;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
 import java.util.regex.Matcher;
 import java.util.regex.Pattern;
 
@@ -52,6 +53,23 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
             System.out.println("  Likely location:  -");
             System.out.println("  Suggested action: -");
         }
+        System.out.flush();
+    }
+
+    @Override
+    public void printDegraded(Instant degradationStartedAt, int consecutiveFailures) {
+        String plural = consecutiveFailures == 1 ? "" : "s";
+        System.out.println();
+        System.out.println(DEGRADED + " LOGGUARD DEGRADED — OpenSearch unreachable since "
+                + degradationStartedAt + " (" + consecutiveFailures + " failure" + plural + ")");
+        System.out.flush();
+    }
+
+    @Override
+    public void printRecovery(Instant resumedAt) {
+        System.out.println();
+        System.out.println(RECOVERED + " LOGGUARD RECOVERED — polling resumed at " + resumedAt
+                + ", catching up from checkpoint");
         System.out.flush();
     }
 

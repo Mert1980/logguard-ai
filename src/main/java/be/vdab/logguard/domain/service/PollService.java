@@ -9,6 +9,8 @@ import be.vdab.logguard.domain.port.out.OpenSearchPort;
 import be.vdab.logguard.domain.port.out.PollCheckpointRepository;
 import be.vdab.logguard.domain.port.out.SuppressionFilePort;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -27,12 +29,18 @@ import java.util.stream.Collectors;
  * <p>The transactional checkpoint-advance boundary (AR-9 / NFR-5) is applied by the
  * {@code TransactionalPollUseCase} wrapper in {@code infrastructure/config} — this class stays Spring-free.</p>
  *
+ * <p>Degradation detection / sticky banner / recovery with auto-backlog is implemented here (Story 2.6):
+ * an OpenSearch outage increments the failure count and holds the checkpoint, the banner reprints each
+ * cycle past the threshold, and the first successful poll clears the state and replays the missed backlog.</p>
+ *
  * <p>NOT yet fully implemented (their own stories): deduplication/fingerprinting (Epic 4 — without it every
- * error triggers an LLM call, vs NFR-4's dedup-before-LLM), escalation, degradation detection (Story 2.6),
- * and real suppression-file parsing/hot-reload (Story 4.3 — the port is reloaded each cycle here but the
- * stub returns an empty set, so nothing is suppressed yet).</p>
+ * error triggers an LLM call, vs NFR-4's dedup-before-LLM), escalation, and real suppression-file
+ * parsing/hot-reload (Story 4.3 — the port is reloaded each cycle here but the stub returns an empty set,
+ * so nothing is suppressed yet).</p>
  */
 public class PollService implements PollUseCase {
+
+    private static final Logger log = LoggerFactory.getLogger(PollService.class);
 
     private final OpenSearchPort openSearchPort;
     private final PollCheckpointRepository checkpointRepository;
@@ -40,19 +48,22 @@ public class PollService implements PollUseCase {
     private final LlmPort llmPort;
     private final SuppressionFilePort suppressionFilePort;
     private final Duration refreshWindow;
+    private final int maxConsecutivePollFailures;
 
     public PollService(OpenSearchPort openSearchPort,
                        PollCheckpointRepository checkpointRepository,
                        TerminalOutputPort terminalOutput,
                        LlmPort llmPort,
                        SuppressionFilePort suppressionFilePort,
-                       Duration refreshWindow) {
+                       Duration refreshWindow,
+                       int maxConsecutivePollFailures) {
         this.openSearchPort = openSearchPort;
         this.checkpointRepository = checkpointRepository;
         this.terminalOutput = terminalOutput;
         this.llmPort = llmPort;
         this.suppressionFilePort = suppressionFilePort;
         this.refreshWindow = refreshWindow;
+        this.maxConsecutivePollFailures = maxConsecutivePollFailures;
     }
 
     @Override
@@ -73,7 +84,22 @@ public class PollService implements PollUseCase {
         // Snapshot the poll start BEFORE querying; the checkpoint advances to here (minus a refresh
         // safety-lag) so errors arriving mid-cycle are picked up next time rather than skipped.
         Instant pollStart = Instant.now();
-        List<ErrorLog> errors = openSearchPort.findErrorsSince(checkpoint.lastSuccessfulPollAt());
+        List<ErrorLog> errors;
+        try {
+            errors = openSearchPort.findErrorsSince(checkpoint.lastSuccessfulPollAt());
+        } catch (Exception e) {
+            // FR-33/34: OpenSearch unreachable. Count the failure, hold the checkpoint (stasis — no
+            // advance), and once the threshold is crossed flag degradation and reprint the sticky banner
+            // each cycle. We do NOT rethrow, so the transaction commits this failure state.
+            handlePollFailure(checkpoint, e);
+            return;
+        }
+
+        // FR-35: a successful query after degradation is the recovery point. Announce it before the
+        // backlog prints; the checkpoint never advanced while degraded, so `errors` IS the full backlog.
+        if (checkpoint.degradationStartedAt() != null) {
+            terminalOutput.printRecovery(Instant.now());
+        }
 
         if (!errors.isEmpty()) {
             Map<String, List<ErrorLog>> byService = errors.stream()
@@ -96,8 +122,28 @@ public class PollService implements PollUseCase {
         if (advanced.isBefore(checkpoint.lastSuccessfulPollAt())) {
             advanced = checkpoint.lastSuccessfulPollAt();
         }
+        // FR-35: a successful cycle is healthy — clear degradation state and reset the failure count.
+        checkpointRepository.save(new PollCheckpoint(advanced, null, 0));
+    }
+
+    /**
+     * FR-33/34: record a failed poll cycle. Increments the consecutive-failure count, holds the
+     * checkpoint (no advance), enters DegradedState once {@code maxConsecutivePollFailures} is reached,
+     * and reprints the sticky banner every cycle while degraded. Called instead of advancing on an
+     * OpenSearch outage; never rethrows, so the surrounding transaction commits the failure state.
+     */
+    private void handlePollFailure(PollCheckpoint checkpoint, Exception cause) {
+        int failures = checkpoint.consecutivePollFailures() + 1;
+        log.warn("Poll cycle failed ({} consecutive): {}", failures, cause.getMessage());
+        Instant degradationStartedAt = checkpoint.degradationStartedAt();
+        if (degradationStartedAt == null && failures >= maxConsecutivePollFailures) {
+            degradationStartedAt = Instant.now();
+        }
         checkpointRepository.save(new PollCheckpoint(
-                advanced, checkpoint.degradationStartedAt(), checkpoint.consecutivePollFailures()));
+                checkpoint.lastSuccessfulPollAt(), degradationStartedAt, failures));
+        if (degradationStartedAt != null) {
+            terminalOutput.printDegraded(degradationStartedAt, failures);
+        }
     }
 
     private void printServiceGroup(String serviceName, List<ErrorLog> errors) {
