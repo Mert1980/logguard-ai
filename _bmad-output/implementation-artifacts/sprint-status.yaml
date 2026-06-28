@@ -35,8 +35,8 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-17
-last_updated: 2026-06-24 (epic-2 stories 2.4/2.5 + epic-3 3.1/3.2 implemented outside the story cycle
-                          during a hackathon push; audited against epics.md ACs and gap-fixed — see notes)
+last_updated: 2026-06-29 (code review of 2.4/2.5/3.1/3.2 completed; all decision findings D1-D4 and patch
+                          findings P1-P6 resolved — tests green, 23 pass / 1 skipped. Stories → done.)
 project: logguard-ai
 project_key: NOKEY
 tracking_system: file-system
@@ -54,26 +54,29 @@ development_status:
   2-1-scaffold-logguard-ai-and-configure-project-infrastructure: review
   2-2-pollcheckpoint-persistence-and-first-run-lookback-prompt: review
   2-3-opensearch-error-polling-adapter: review
-  # 2.4: implemented + gap-fixed (per-error @{ClassName} added). Deferred: status-indicator constants
-  # (DEGRADED/RECOVERED/WONT_FIX/ESCALATION) — no consumers until 2.6/Epic 4. Pending code review (CR).
-  2-4-terminal-output-service-grouped-count-ordered-per-error-block: review
-  # 2.5: implemented + gap-fixed (SuppressionFilePort.loadHashes() reload-first stub; @Transactional poll
-  # boundary via TransactionalPollUseCase, domain stays Spring-free). Deviation: initialDelay=2s not 0
-  # (intentional — lets the first-run prompt finish). Pending code review (CR).
-  2-5-poll-loop-with-checkpoint-advance-invariant: review
+  # 2.4: code review done. Status-indicator constants DEGRADED/RECOVERED/WONT_FIX/ESCALATION now defined
+  # (D3); null exception-type header guarded (P3); unavailability-reason rendering hardened — one line,
+  # length-capped, blank → "reason unknown" (P5). The four constants stay unused until 2.6/Epic 4 emit them.
+  2-4-terminal-output-service-grouped-count-ordered-per-error-block: done
+  # 2.5: code review done. Poll-cycle transaction now bounded by a configurable timeout (D2); checkpoint
+  # advances to pollStart minus a refresh safety-lag so refresh-lagged errors aren't skipped (D1).
+  # Accepted deviation: initialDelay=2s not AR-12's 0 (intentional — lets the first-run prompt finish) (D4).
+  2-5-poll-loop-with-checkpoint-advance-invariant: done
   2-6-degradation-detection-sticky-banner-and-recovery-with-auto-backlog: backlog
   epic-2-retrospective: optional
 
   # Epic 3: LLM Setup & Integration
-  epic-3: in-progress
-  # 3.1: code artifacts complete (TenantDataSanitizer + tests, 6-field payload, llm-analysis.st,
-  # LLMAnalysis record). AR-18 manual prompt-validation gate WAIVED by team decision 2026-06-24 (hackathon
-  # time pressure); the live demo output serves as the lightweight empirical check — if root-cause lines
-  # come back generic, redesign the prompt in llm-analysis.st. Pending code review (CR).
-  3-1-llm-prompt-validation-gate-tenantdatasanitizer-payload-builder-and-manual-prompt-test: review
-  # 3.2: implemented + gap-fixed (malformed = ANY missing field, FR-23). Open item: logguard.ollama.timeout
-  # is a dead property — not wired to the Ollama HTTP client. Pending code review (CR).
-  3-2-ollama-llm-adapter-with-structured-output-and-failure-fallback: review
+  epic-3: done
+  # 3.1: code review done. LDAP-DN redaction broadened — non-cn= leads (uid=), spaces-after-comma, and
+  # multi-valued RDNs now stripped, closing the FR-21 PII leak (P4). AR-18 manual prompt-validation gate
+  # remains WAIVED by team decision 2026-06-24; live demo output is the lightweight empirical check.
+  3-1-llm-prompt-validation-gate-tenantdatasanitizer-payload-builder-and-manual-prompt-test: done
+  # 3.2: code review done. logguard.ollama.timeout now wired to the Ollama HTTP client via
+  # spring.http.client.read-timeout (P1); own-code stack-frame selection fixed — parse the frame FQCN
+  # instead of substring-match, no header duplication, blank prefixes filtered (P2); null payload fields
+  # guarded to "unknown" (P3); system-prompt InputStream closed via try-with-resources (P6).
+  3-2-ollama-llm-adapter-with-structured-output-and-failure-fallback: done
+  # epic-3 → done: both listed stories (3.1, 3.2) complete; retrospective remains optional.
   epic-3-retrospective: optional
 
   # Epic 4: Fingerprint Deduplication & Won't-Fix Suppression

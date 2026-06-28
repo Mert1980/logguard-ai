@@ -1,8 +1,18 @@
-# Code Review Session — 2026-06-24 (PAUSED)
+# Code Review Session — 2026-06-24 (COMPLETED 2026-06-29)
 
-**Status:** Paused at `bmad-code-review` **step-04 (Present & Act)**, awaiting the user's answers to
-decision-needed findings D1–D4. Resume by answering D1–D4, then handle the patch findings, then sync
-status.
+**Status:** DONE. D1–D4 answered (see "DECISIONS MADE" below); D1/D2/D3 + P1–P6 applied as nine separate
+commits (D4 kept as an accepted deviation, no code change). Test suite green (23 pass / 1 skipped — the
+live OpenSearch test). Stories 2.4/2.5/3.1/3.2 moved to `done` in sprint-status.yaml; epic-3 → done.
+
+## DECISIONS MADE (2026-06-28)
+- **D1 → Subtract refresh safety-lag (Patch).** Advance checkpoint to `pollStart − refreshWindow`
+  in `PollService.java`; re-scans the recent window each cycle, Epic 4 dedup absorbs the double-fetch.
+- **D2 → Add `@Transactional(timeout=…)` (Patch).** Keep the AR-9-compliant boundary, bound it with an
+  explicit tx timeout in `TransactionalPollUseCase.java`.
+- **D3 → Add the four constants now (Patch).** Add `DEGRADED/RECOVERED/WONT_FIX/ESCALATION` to
+  `TerminalOutputAdapter.java` to satisfy Story 2.4 AC literally.
+- **D4 → Keep 2s (accepted deviation, Defer/dismiss).** Document the deviation from AR-12's 0;
+  `PollService` empty-checkpoint guard makes it safe.
 
 ## Scope reviewed
 - **Diff:** commit range `409e8f7..HEAD` (branch `refactoring`, HEAD `ab994cb`).
