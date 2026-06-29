@@ -30,3 +30,32 @@ scope. Each is tagged with the file(s) involved.
 - **AR-18 prompt-validation gate not run** — deliberately waived for the hackathon; the live demo
   output serves as the lightweight empirical check (if root-cause lines come back generic, redesign the
   prompt in `llm-analysis.st`). Process item, not code.
+
+## Deferred from: code review of Story 4.2 (2026-06-29, Sonnet 4.6)
+
+Three Sonnet review lenses (Blind Hunter / Edge Case Hunter / Acceptance Auditor) over the 4.2 dedup gate.
+Confirmed fixes were applied in-story (failed-analysis not cached; Phase-2 cache-miss now logs; converter
+read hardened; across-cycle NFR-4 + failed-analysis tests added). The items below are real but deferred:
+
+- **8-hex fingerprint hash = 32-bit collision space** — two distinct fingerprints sharing an 8-char hash
+  would collide on the `UNIQUE(fingerprint_hash)` upsert, silently suppressing one distinct error for the
+  window. Negligible at LogGuard's active-table scale (dozens–hundreds of rows; 24h expiry), and the hash
+  width is an approved Story 4.1 design decision. Revisit only if widening the hash. Files:
+  `ErrorFingerprint.java`, `DeduplicationRecordRepositoryAdapter.java`.
+- **Concurrent poll cycles → UNIQUE-constraint race** — the read-then-insert upsert is not atomic; two
+  overlapping cycles inserting the same new fingerprint would collide. Mitigated by `@Scheduled` fixedDelay
+  (single-threaded, no overlap) — an implicit assumption, not enforced in code. If a custom multi-threaded
+  `TaskScheduler` is ever introduced, switch to `MERGE`/upsert SQL. File: `DeduplicationRecordRepositoryAdapter.java`.
+- **`deleteExpired` needs a transaction + has no scheduler** — Spring Data derived `deleteByExpiresAtBefore`
+  throws `TransactionRequiredException` outside a transaction; the adapter method has no `@Transactional`
+  and no call site yet (housekeeping is out of 4.2 scope). When a cleanup job is wired (4.x), make the call
+  transactional. Without it, expired rows accumulate. Files: `DeduplicationRecordRepositoryAdapter.java`,
+  `DeduplicationRecordJpaRepository.java`.
+- **`occurrence_count` is `int`/INTEGER (32-bit)** — silently wraps at ~2.1e9. Implausible per-fingerprint
+  volume in 24h, but `long`/BIGINT is free insurance for the 1,000× volume-override context (Story 4.5).
+  Files: `DeduplicationRecord.java`, `DeduplicationRecordEntity.java`, `V2__…sql`.
+- **`expires_at == now` boundary** — `isAfter` is strict, so a row exactly at its expiry instant is both
+  invisible to the gate and skipped by `deleteByExpiresAtBefore` (strict `<`) — a harmless ghost row until
+  the next cleanup. Closed-open interval is intentional; note only. File: `DeduplicationRecordRepositoryAdapter.java`.
+- **Null `service.name` conflated with a literal `"unknown"` service** — both group under the `"unknown"`
+  key in terminal output. Cosmetic; no data loss. File: `PollService.java`.

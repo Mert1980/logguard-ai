@@ -1,9 +1,12 @@
 package be.vdab.logguard.domain.service;
 
+import be.vdab.logguard.domain.model.DeduplicationRecord;
+import be.vdab.logguard.domain.model.ErrorFingerprint;
 import be.vdab.logguard.domain.model.ErrorLog;
 import be.vdab.logguard.domain.model.LLMAnalysis;
 import be.vdab.logguard.domain.model.PollCheckpoint;
 import be.vdab.logguard.domain.port.in.PollUseCase;
+import be.vdab.logguard.domain.port.out.DeduplicationRecordRepository;
 import be.vdab.logguard.domain.port.out.LlmPort;
 import be.vdab.logguard.domain.port.out.OpenSearchPort;
 import be.vdab.logguard.domain.port.out.PollCheckpointRepository;
@@ -33,10 +36,12 @@ import java.util.stream.Collectors;
  * an OpenSearch outage increments the failure count and holds the checkpoint, the banner reprints each
  * cycle past the threshold, and the first successful poll clears the state and replays the missed backlog.</p>
  *
- * <p>NOT yet fully implemented (their own stories): deduplication/fingerprinting (Epic 4 — without it every
- * error triggers an LLM call, vs NFR-4's dedup-before-LLM), escalation, and real suppression-file
- * parsing/hot-reload (Story 4.3 — the port is reloaded each cycle here but the stub returns an empty set,
- * so nothing is suppressed yet).</p>
+ * <p>Deduplication gate (Story 4.2): each error is fingerprinted; a fingerprint with no active
+ * {@link DeduplicationRecord} is new (analysed once, cached, displayed), while an active one only
+ * increments the occurrence count — silently. This bounds LLM calls to unique fingerprints per cycle
+ * (NFR-4). NOT yet wired (their own stories): suppression-file consumption / won't-fix (Story 4.3/4.4 —
+ * the port is reloaded each cycle here for the FR-14 ordering, but its result is not consulted yet, so
+ * records are always created with {@code wontFix=false}), and escalation re-notifications (Story 4.5).</p>
  */
 public class PollService implements PollUseCase {
 
@@ -47,6 +52,9 @@ public class PollService implements PollUseCase {
     private final TerminalOutputPort terminalOutput;
     private final LlmPort llmPort;
     private final SuppressionFilePort suppressionFilePort;
+    private final FingerprintService fingerprintService;
+    private final DeduplicationRecordRepository dedupRepository;
+    private final Duration deduplicationWindow;
     private final Duration refreshWindow;
     private final int maxConsecutivePollFailures;
 
@@ -55,6 +63,9 @@ public class PollService implements PollUseCase {
                        TerminalOutputPort terminalOutput,
                        LlmPort llmPort,
                        SuppressionFilePort suppressionFilePort,
+                       FingerprintService fingerprintService,
+                       DeduplicationRecordRepository dedupRepository,
+                       Duration deduplicationWindow,
                        Duration refreshWindow,
                        int maxConsecutivePollFailures) {
         this.openSearchPort = openSearchPort;
@@ -62,6 +73,9 @@ public class PollService implements PollUseCase {
         this.terminalOutput = terminalOutput;
         this.llmPort = llmPort;
         this.suppressionFilePort = suppressionFilePort;
+        this.fingerprintService = fingerprintService;
+        this.dedupRepository = dedupRepository;
+        this.deduplicationWindow = deduplicationWindow;
         this.refreshWindow = refreshWindow;
         this.maxConsecutivePollFailures = maxConsecutivePollFailures;
     }
@@ -101,17 +115,20 @@ public class PollService implements PollUseCase {
             terminalOutput.printRecovery(Instant.now());
         }
 
-        if (!errors.isEmpty()) {
-            Map<String, List<ErrorLog>> byService = errors.stream()
+        // FR-8: three-state dedup gate, two-phase so the progress line counts only errors that will
+        // actually be analysed/shown and an all-duplicate service prints nothing.
+        List<ErrorLog> newErrors = gateAndCollectNew(errors);
+        if (!newErrors.isEmpty()) {
+            Map<String, List<ErrorLog>> byService = newErrors.stream()
                     .collect(Collectors.groupingBy(
                             error -> error.serviceName() != null ? error.serviceName() : "unknown",
                             LinkedHashMap::new,
                             Collectors.toList()));
-            // FR-29: most-affected service first.
+            // FR-29: most-affected service first (over deduplicated counts).
             byService.entrySet().stream()
                     .sorted(Comparator.comparingInt((Map.Entry<String, List<ErrorLog>> e) -> e.getValue().size())
                             .reversed())
-                    .forEach(entry -> printServiceGroup(entry.getKey(), entry.getValue()));
+                    .forEach(entry -> analyseServiceGroup(entry.getKey(), entry.getValue()));
         }
         // FR-26: zero errors -> print nothing. Advance the checkpoint only after a successful query +
         // delivery; if findErrorsSince threw, we never reach here (checkpoint stasis).
@@ -146,11 +163,57 @@ public class PollService implements PollUseCase {
         }
     }
 
-    private void printServiceGroup(String serviceName, List<ErrorLog> errors) {
+    /**
+     * Phase 1 of the dedup gate: fingerprint every error and update its {@link DeduplicationRecord}.
+     * An active record (cooling) only has its occurrence count incremented — silent, no LLM, no output
+     * (FR-8). A fingerprint with no active record is new: create the record now (so a duplicate later in
+     * the SAME batch is found active and increments instead of being analysed twice — NFR-4) and return
+     * its first occurrence for analysis in phase 2. Suppression is not consulted yet (Story 4.4), so new
+     * records are always created with {@code wontFix=false}.
+     */
+    private List<ErrorLog> gateAndCollectNew(List<ErrorLog> errors) {
+        Instant now = Instant.now();
+        // Preserve first-seen order of new fingerprints; one entry per fingerprint hash.
+        Map<String, ErrorLog> newByHash = new LinkedHashMap<>();
+        for (ErrorLog error : errors) {
+            ErrorFingerprint fingerprint = fingerprintService.compute(error);
+            Optional<DeduplicationRecord> active = dedupRepository.findActiveByFingerprint(fingerprint);
+            if (active.isPresent()) {
+                // Cooling (or a duplicate already created earlier this batch): increment silently.
+                dedupRepository.save(active.get().incrementOccurrence());
+            } else if (!newByHash.containsKey(fingerprint.hash())) {
+                // New fingerprint, first occurrence: persist count=1 before phase-2 analysis.
+                dedupRepository.save(DeduplicationRecord.createNew(fingerprint, now, deduplicationWindow, false));
+                newByHash.put(fingerprint.hash(), error);
+            }
+        }
+        return List.copyOf(newByHash.values());
+    }
+
+    /**
+     * Phase 2: analyse and display the new errors of one service (FR-27/28/30). Re-fetches the record
+     * before caching so the stored analysis is written onto the current occurrence count (which phase 1
+     * may have bumped past 1) rather than clobbering it (FR-25).
+     */
+    private void analyseServiceGroup(String serviceName, List<ErrorLog> errors) {
         terminalOutput.printProgress(serviceName, errors.size());
         int index = 1;
         for (ErrorLog error : errors) {
+            ErrorFingerprint fingerprint = fingerprintService.compute(error);
             LLMAnalysis analysis = llmPort.analyse(error);
+            // FR-25: cache only a SUCCESSFUL analysis. Caching a transient failure (Ollama down/timeout)
+            // would poison the dedup window — every later occurrence is suppressed and escalation
+            // (Story 4.5) would replay the failure instead of a real root cause. A failed analysis is
+            // still displayed below (FR-24); storedAnalysis just stays null so it can be retried.
+            if (analysis.llmAvailable()) {
+                Optional<DeduplicationRecord> current = dedupRepository.findActiveByFingerprint(fingerprint);
+                if (current.isPresent()) {
+                    dedupRepository.save(current.get().withStoredAnalysis(analysis));
+                } else {
+                    // Phase 1 created this record earlier in the same cycle; absence here is unexpected.
+                    log.warn("Dedup record for fingerprint {} not found when caching its analysis", fingerprint.hash());
+                }
+            }
             terminalOutput.printAnalysis(index++, errors.size(), error, analysis);
         }
     }

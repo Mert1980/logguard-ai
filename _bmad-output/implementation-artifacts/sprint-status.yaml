@@ -35,8 +35,8 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-17
-last_updated: 2026-06-29 (Story 4.1 implemented (FingerprintService + ErrorFingerprint) → review; epic-4 in-progress.
-                          Prior: 2.4/2.5/3.1/3.2 → done; Story 2.6 → review. Tests green: 41 pass / 1 skipped.)
+last_updated: 2026-06-29 (Story 4.2 code review done (Sonnet 4.6) → done; epic-4 in-progress. Prior: 4.1 → review;
+                          2.4/2.5/3.1/3.2 → done; 2.6 → review. Tests green: 52 pass / 1 skipped.)
 project: logguard-ai
 project_key: NOKEY
 tracking_system: file-system
@@ -90,7 +90,14 @@ development_status:
   # fallback (topmost frame), and the throwing_method (line KEPT) vs stack_trace_sequence (lines STRIPPED)
   # asymmetry. 11 hermetic FingerprintServiceTest cases; full suite 41 pass / 1 skipped. Pending code review.
   4-1-errorfingerprint-computation-with-owncodeframe-detection-and-line-number-asymmetry: review
-  4-2-deduplicationrecord-persistence-three-state-gate-and-llm-analysis-caching: backlog
+  # 4.2: code review done (Sonnet 4.6, 3 adversarial lenses). Implemented FR-8/9/10/25 + NFR-4:
+  # DeduplicationRecord + V2 migration + JPA entity/adapter (upsert by fingerprint_hash, expiry filter) +
+  # LlmAnalysisJsonConverter (Jackson 3 → stored_analysis CLOB); two-phase three-state gate in PollService;
+  # FingerprintService wired. Review fixes applied: failed-analysis not cached (no window poisoning),
+  # Phase-2 cache-miss logs, converter read hardened, across-cycle NFR-4 + failed-analysis tests added.
+  # 6 low-sev items deferred (see deferred-work.md). Suite 52 pass / 1 skipped. Scope deferred to later
+  # stories: suppression consult (4.3/4.4), WontFix label + Fingerprint output line (4.4), escalation (4.5).
+  4-2-deduplicationrecord-persistence-three-state-gate-and-llm-analysis-caching: done
   4-3-suppressionfile-adapter-with-hot-reload-ordering-guarantee-and-read-only-authority: backlog
   4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: backlog
   4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: backlog
