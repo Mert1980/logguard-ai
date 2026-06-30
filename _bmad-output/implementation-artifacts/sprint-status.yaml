@@ -35,7 +35,7 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-17
-last_updated: 2026-06-30 (Story 4.3 implemented → review; epic-4 in-progress. Prior: 4.2 → done; 4.1 → review;
+last_updated: 2026-06-30 (Story 4.3 code-reviewed → done; epic-4 in-progress. Prior: 4.2 → done; 4.1 → review;
                           2.4/2.5/3.1/3.2 → done; 2.6 → review. Tests green: 56 pass / 1 skipped.)
 project: logguard-ai
 project_key: NOKEY
@@ -104,8 +104,12 @@ development_status:
   # keeps lastKnown, prints ESCALATION ⚠️ "Suppression file unreadable — using last known state", never
   # throws. Strictly read-only (no write API in any branch incl. catch). Added TerminalOutputPort
   # .printSuppressionUnreadable. Returned set still discarded by PollService (consuming = 4.4). New hermetic
-  # SuppressionFileAdapterTest (4 cases). Suite 56 pass / 1 skipped. Pending code review.
-  4-3-suppressionfile-adapter-with-hot-reload-ordering-guarantee-and-read-only-authority: review
+  # SuppressionFileAdapterTest (4 cases). Code review done (Opus 4.8, 3 adversarial lenses): all ACs #1–#10
+  # PASS. Patches applied — loadHashes now returns an immutable Set.copyOf snapshot (no live-reference leak
+  # to a future 4.4 consumer); stderr diagnostic on read failure (distinct from the FR-15 line); stale
+  # SuppressionFilePort Javadoc refreshed. 1 item deferred to 4.4: absent-file wipes lastKnown vs unreadable
+  # keeps it — atomic-save (delete-recreate) editors could momentarily un-suppress once the set is consumed.
+  4-3-suppressionfile-adapter-with-hot-reload-ordering-guarantee-and-read-only-authority: done
   4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: backlog
   4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: backlog
   epic-4-retrospective: optional

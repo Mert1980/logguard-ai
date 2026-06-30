@@ -59,3 +59,17 @@ read hardened; across-cycle NFR-4 + failed-analysis tests added). The items belo
   the next cleanup. Closed-open interval is intentional; note only. File: `DeduplicationRecordRepositoryAdapter.java`.
 - **Null `service.name` conflated with a literal `"unknown"` service** — both group under the `"unknown"`
   key in terminal output. Cosmetic; no data loss. File: `PollService.java`.
+
+## Deferred from: code review of Story 4.3 (2026-06-30, Opus 4.8)
+
+Adversarial review (Blind Hunter / Edge Case Hunter / Acceptance Auditor) over the SuppressionFile adapter.
+All ACs #1–#10 passed. Two patches were applied in-story (defensive-copy on the success path; stderr cause
+on read failure). One item deferred by decision:
+
+- **Absent-file wipes `lastKnown` while unreadable keeps it — atomic-save risk** — AC #5 (absent → empty set)
+  and AC #6 (unreadable → last-known) are both spec-correct, but many editors save via delete-then-recreate.
+  A poll cycle landing in that brief window hits `!Files.exists` and wipes all suppressions for that cycle.
+  No live impact today because `PollService` discards the returned set; once **Story 4.4** consumes it, a
+  hot-edit-via-atomic-replace could momentarily un-suppress every won't-fix error. Revisit when wiring the
+  set into the dedup gate — e.g. keep last-known on transient absence, or detect the rename window.
+  File: `SuppressionFileAdapter.java` (lines 48-50).

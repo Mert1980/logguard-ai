@@ -7,9 +7,10 @@ import java.util.Set;
  * method on this interface under any circumstance (FR-16 / NFR-6). No Spring annotations.
  *
  * <p>{@code loadHashes()} is invoked at the START of every poll cycle, before any error is processed,
- * so a hot-edited file takes effect within one cycle (FR-14 ordering guarantee). The real parsing,
- * hot-reload, and "unreadable → last known state" behaviour is Story 4.3; until then a stub returns an
- * empty set (nothing suppressed).</p>
+ * so a hot-edited file takes effect within one cycle (FR-14 ordering guarantee). The implementation
+ * re-reads and parses the file each cycle (hot-reload), treats an absent file as "nothing suppressed"
+ * (empty set), and on a read/parse failure keeps the last successfully loaded set ("unreadable → last
+ * known state"). {@code loadHashes()} never throws, so this call site needs no guard.</p>
  */
 public interface SuppressionFilePort {
 

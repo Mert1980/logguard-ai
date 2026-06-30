@@ -4,7 +4,7 @@ baseline_commit: 192a6d73822b123a7a3dc7c4071dc4c32bb7b5d3
 
 # Story 4.3: SuppressionFile Adapter with Hot-Reload, Ordering Guarantee, and Read-Only Authority
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -109,6 +109,17 @@ This split is why the "unreadable" test forces an `IOException` by pointing the 
 ### Git Intelligence
 - Baseline HEAD `192a6d7` "Implement deduplication gate with LLM-analysis caching (Story 4.2)". The dedup gate, `FingerprintService`, and persistence are committed and stable.
 - Mirror committed patterns: `@Component` adapter implementing a `domain/port/out` interface with explicit constructor injection (`OpenSearchAdapter`, `PollCheckpointRepositoryAdapter`); pure `@TempDir` unit tests; status-constant usage in `TerminalOutputAdapter`.
+
+## Review Findings (Code Review 2026-06-30)
+
+Adversarial review (Blind Hunter + Edge Case Hunter + Acceptance Auditor, Opus 4.8). Acceptance Auditor: **all ACs #1–#10 PASS, no acceptance violations**. The items below are quality/robustness findings, not AC failures.
+
+- [x] [Review][Patch] Swallowed exception gives no diagnostics [SuppressionFileAdapter.java:56-60] — `catch (IOException | RuntimeException e)` discards `e`; the operator only sees `⚠️ Suppression file unreadable` with no cause. **Resolution (Decision 1 → add diagnostics):** print the path + `e`'s message to `System.err` inside the catch, kept distinct from the FR-15 user-facing string so AC #6 stays intact. (Broad `RuntimeException` catch + "never throws" remain as spec-mandated.)
+- [x] [Review][Defer] Absent-file wipes `lastKnown` while unreadable keeps it — atomic-save risk [SuppressionFileAdapter.java:48-50] — **deferred to Story 4.4** (Decision 2). Reason: no live impact until 4.4 consumes the suppression set; revisit atomic-save (delete-then-recreate) hardening when the set is actually wired into the dedup gate.
+- [x] [Review][Patch] `loadHashes()` success path returns the live mutable `lastKnown` reference [SuppressionFileAdapter.java:54] — the absent/error branches return immutable `Set.of()`/retained sets, but the success path returns the internal `LinkedHashSet`. A future consumer (Story 4.4) mutating the returned set would corrupt the hot-reload baseline. Fix: `return Set.copyOf(lastKnown)` (or store an unmodifiable copy). Also removes the branch-to-branch inconsistency.
+- [x] [Review][Patch] Stale Javadoc on the port [SuppressionFilePort.java:10-12] — still says the real behaviour "is Story 4.3; until then a stub returns an empty set." The stub shipped; update the prose to describe the now-current adapter behaviour.
+
+**Dismissed as noise (9):** broad `RuntimeException` catch (spec-mandated, AC #6); `lastKnown` data race (poll is single-threaded per FR-14 — Dev Notes); hash containing `#` truncated (cannot occur — fingerprints are hex); TOCTOU between `exists` and `readAllLines` (falls to the safe catch branch — only a cosmetic extra warning); `Path.of` throwing at construction (`@DefaultValue` prevents null; fail-fast on misconfig is acceptable); warning reprinted every cycle with no rate-limit (consistent with the Story 2.6 sticky-banner pattern); `LinkedHashSet` ordering unasserted (spec-prescribed, ordering not contractual); whitespace-in-token never matches (consistent with the spec's deliberate no-validation stance); "using last known state" message when last-known is still empty (FR-15 string is spec-fixed; cosmetic).
 
 ## Dev Agent Record
 

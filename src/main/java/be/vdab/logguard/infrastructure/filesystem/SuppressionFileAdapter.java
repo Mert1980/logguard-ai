@@ -51,11 +51,15 @@ public class SuppressionFileAdapter implements SuppressionFilePort {
         }
         try {
             List<String> lines = Files.readAllLines(suppressionFile, StandardCharsets.UTF_8);
-            lastKnown = parse(lines);
+            // Store an immutable snapshot: lastKnown is handed back to the caller and reused as the
+            // fallback on a later failed read, so it must not be a mutable reference a consumer could alter.
+            lastKnown = Set.copyOf(parse(lines));
             return lastKnown;
         } catch (IOException | RuntimeException e) {
             // Unreadable/parse error: keep the last known state, warn, keep polling. NEVER write here.
             terminalOutput.printSuppressionUnreadable();
+            // Diagnostic only (not the FR-15 user-facing line): give the developer the cause to debug with.
+            System.err.println("Suppression file " + suppressionFile + " could not be read: " + e);
             return lastKnown;
         }
     }
