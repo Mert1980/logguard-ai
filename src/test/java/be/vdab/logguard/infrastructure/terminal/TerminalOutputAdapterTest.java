@@ -67,6 +67,43 @@ class TerminalOutputAdapterTest {
 		assertFalse(out.contains("[a1b2c3d4]"), "the WontFix label must NOT bracket the hash (FR-32)");
 	}
 
+	@Test
+	void printEscalation_cooling_printsKnownErrorWithReusedRootCause() {
+		LLMAnalysis stored = LLMAnalysis.available("connection pool exhausted", "Foo.bar:7", "raise max-pool");
+		Instant firstSeen = Instant.parse("2026-06-15T00:00:00Z");
+
+		String out = capture(() -> adapter.printEscalation("NullPointerException@Foo:7", 100, firstSeen, stored, false));
+
+		assertTrue(out.contains("⚠️ Known error NullPointerException@Foo:7 now seen 100× since " + firstSeen),
+				"cooling escalation header; got:\n" + out);
+		assertTrue(out.contains("   Root cause: connection pool exhausted"),
+				"cooling escalation reuses the stored root cause; got:\n" + out);
+	}
+
+	@Test
+	void printEscalation_cooling_nullStored_printsNoAnalysisOnFile() {
+		Instant firstSeen = Instant.parse("2026-06-15T00:00:00Z");
+
+		String out = capture(() -> adapter.printEscalation("NullPointerException@Foo:7", 10, firstSeen, null, false));
+
+		assertTrue(out.contains("⚠️ Known error NullPointerException@Foo:7 now seen 10× since " + firstSeen),
+				"got:\n" + out);
+		assertTrue(out.contains("   Root cause: no analysis on file"),
+				"null stored analysis renders the fallback; got:\n" + out);
+	}
+
+	@Test
+	void printEscalation_wontFix_printsOneLineVolumeOverrideNoRootCause() {
+		Instant firstSeen = Instant.parse("2026-06-15T00:00:00Z");
+
+		String out = capture(() -> adapter.printEscalation("IllegalStateException@Bar:9", 1000, firstSeen, null, true));
+
+		assertTrue(out.contains("⚠️ Won't-fix error IllegalStateException@Bar:9 now seen 1000× since "
+						+ firstSeen + " — volume is unusually high"),
+				"won't-fix volume override, one line; got:\n" + out);
+		assertFalse(out.contains("Root cause:"), "the volume override carries no Root cause line; got:\n" + out);
+	}
+
 	private static ErrorLog errorWith(String exceptionType) {
 		return new ErrorLog(exceptionType, "boom",
 				"java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)",

@@ -55,4 +55,14 @@ public record DeduplicationRecord(
         return new DeduplicationRecord(fingerprint, firstSeenAt, expiresAt, occurrenceCount,
                 lastNotifiedThreshold, false, storedAnalysis);
     }
+
+    /**
+     * Same record with {@code lastNotifiedThreshold} set to the just-fired escalation threshold (every
+     * other field unchanged, FR-11). Records the highest threshold reached so each fires at most once per
+     * deduplication window; resets to {@code null} only when the record is recreated for a new window.
+     */
+    public DeduplicationRecord withLastNotifiedThreshold(int threshold) {
+        return new DeduplicationRecord(fingerprint, firstSeenAt, expiresAt, occurrenceCount,
+                threshold, wontFix, storedAnalysis);
+    }
 }

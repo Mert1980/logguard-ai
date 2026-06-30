@@ -93,6 +93,34 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
         System.out.flush();
     }
 
+    @Override
+    public void printEscalation(String humanLabel, int threshold, Instant firstSeen, LLMAnalysis stored,
+                               boolean wontFix) {
+        // FR-11/FR-12/FR-31: re-notification reusing the cached analysis (no fresh LLM call). Uses the
+        // ESCALATION status constant (Story 2.4 AC — never an inline glyph), same blank-line→message→flush
+        // style as printDegraded/printRecovery. Threshold rendered as a raw integer (METIS decision).
+        System.out.println();
+        if (wontFix) {
+            // Volume override (FR-12): one line, no analysis, a read-only nudge — wontFix is NOT cleared.
+            System.out.println(ESCALATION + " Won't-fix error " + humanLabel + " now seen " + threshold
+                    + "× since " + firstSeen + " — volume is unusually high");
+        } else {
+            // Cooling re-notification (FR-31): two lines, reusing the stored root cause.
+            System.out.println(ESCALATION + " Known error " + humanLabel + " now seen " + threshold
+                    + "× since " + firstSeen);
+            System.out.println("   Root cause: " + storedRootCause(stored));
+        }
+        System.out.flush();
+    }
+
+    /** Cached root cause for an escalation, or "no analysis on file" when none was successfully cached (FR-25). */
+    private static String storedRootCause(LLMAnalysis stored) {
+        if (stored == null || !stored.llmAvailable() || stored.rootCause() == null || stored.rootCause().isBlank()) {
+            return "no analysis on file";
+        }
+        return stored.rootCause().strip();
+    }
+
     private static String dash(String value) {
         return (value == null || value.isBlank()) ? "-" : value.strip();
     }

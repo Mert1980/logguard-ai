@@ -41,4 +41,19 @@ public interface TerminalOutputPort {
 
     /** FR-15: the suppression file existed but could not be read/parsed — keeping the last known state. */
     void printSuppressionUnreadable();
+
+    /**
+     * FR-11/FR-12/FR-31: escalation re-notification when a known error's occurrence count crosses a
+     * configured threshold. Reuses the cached {@code stored} analysis — never a fresh LLM call (FR-25).
+     * Two shapes by {@code wontFix}: a cooling record prints the "Known error … Root cause:" block; a
+     * won't-fix record prints the one-line "Won't-fix error … — volume is unusually high" volume override
+     * (FR-12, fired only at the 1000× threshold; a read-only nudge that does not clear {@code wontFix}).
+     *
+     * @param humanLabel the computed fingerprint label ({@link be.vdab.logguard.domain.model.ErrorFingerprint#humanLabel()})
+     * @param threshold  the threshold value just crossed (e.g. 10, 100, 1000)
+     * @param firstSeen  when the fingerprint was first recorded in the current window
+     * @param stored     the cached analysis to reuse; {@code null} → "no analysis on file" (cooling shape only)
+     * @param wontFix    {@code true} selects the volume-override shape, {@code false} the cooling shape
+     */
+    void printEscalation(String humanLabel, int threshold, Instant firstSeen, LLMAnalysis stored, boolean wontFix);
 }

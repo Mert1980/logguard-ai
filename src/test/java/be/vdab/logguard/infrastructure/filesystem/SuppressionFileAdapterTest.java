@@ -106,6 +106,11 @@ class SuppressionFileAdapterTest {
 		}
 
 		@Override
+		public void printEscalation(String humanLabel, int threshold, Instant firstSeen, LLMAnalysis stored,
+									boolean wontFix) {
+		}
+
+		@Override
 		public void printDegraded(Instant degradationStartedAt, int consecutiveFailures) {
 		}
 

@@ -47,12 +47,24 @@ import java.util.stream.Collectors;
  * immediately — no LLM, no service block — and the {@code ⚑} label prints once (won't-fix-from-birth,
  * FR-8/FR-17). An active won't-fix record whose hash has been removed from the file is unsuppressed on its
  * next encounter ({@code clearWontFix}, FR-19). Every displayed block also carries the FR-18 Fingerprint
- * line. NOT yet wired (Story 4.5): escalation re-notifications and the won't-fix volume override — the
- * cooling and won't-fix paths only increment the count silently and never touch {@code lastNotifiedThreshold}.</p>
+ * line.</p>
+ *
+ * <p>Escalation re-notifications (Story 4.5): when an active record's occurrence count crosses a configured
+ * threshold ({@code escalation-thresholds}, default 10/100/1000), the cooling path reprints the cached
+ * analysis (FR-11/FR-31) — no fresh LLM call (FR-25) — and the won't-fix path fires a one-line volume
+ * override at 1000× only (FR-12, a read-only nudge that does not clear {@code wontFix}). {@code lastNotifiedThreshold}
+ * tracks the once-per-window guard; thresholds fire in sequence during backlog catchup (FR-13).</p>
  */
 public class PollService implements PollUseCase {
 
     private static final Logger log = LoggerFactory.getLogger(PollService.class);
+
+    /**
+     * FR-12: the won't-fix volume override fires only at this threshold (a read-only nudge). Tied to the
+     * literal 1000 per the spec ({@code DeliverEscalation}: {@code won't_fix = false OR threshold = 1000});
+     * if {@code escalation-thresholds} is configured without 1000, the won't-fix override never fires.
+     */
+    private static final int WONT_FIX_OVERRIDE_THRESHOLD = 1000;
 
     private final OpenSearchPort openSearchPort;
     private final PollCheckpointRepository checkpointRepository;
@@ -64,6 +76,8 @@ public class PollService implements PollUseCase {
     private final Duration deduplicationWindow;
     private final Duration refreshWindow;
     private final int maxConsecutivePollFailures;
+    /** Sorted-ascending, immutable; empty disables escalation (NFR-3 — configurable, default [10,100,1000]). */
+    private final List<Integer> escalationThresholds;
 
     public PollService(OpenSearchPort openSearchPort,
                        PollCheckpointRepository checkpointRepository,
@@ -74,7 +88,8 @@ public class PollService implements PollUseCase {
                        DeduplicationRecordRepository dedupRepository,
                        Duration deduplicationWindow,
                        Duration refreshWindow,
-                       int maxConsecutivePollFailures) {
+                       int maxConsecutivePollFailures,
+                       List<Integer> escalationThresholds) {
         this.openSearchPort = openSearchPort;
         this.checkpointRepository = checkpointRepository;
         this.terminalOutput = terminalOutput;
@@ -85,6 +100,9 @@ public class PollService implements PollUseCase {
         this.deduplicationWindow = deduplicationWindow;
         this.refreshWindow = refreshWindow;
         this.maxConsecutivePollFailures = maxConsecutivePollFailures;
+        this.escalationThresholds = escalationThresholds == null
+                ? List.of()
+                : escalationThresholds.stream().sorted().toList();
     }
 
     @Override
@@ -200,11 +218,13 @@ public class PollService implements PollUseCase {
             if (active.isPresent()) {
                 DeduplicationRecord record = active.get();
                 if (record.wontFix() && !suppressed.contains(hash)) {
-                    // FR-19: hash removed from the file while still in-window → unsuppress, then count.
-                    dedupRepository.save(record.clearWontFix().incrementOccurrence());
+                    // FR-19: hash removed from the file while still in-window → unsuppress (now cooling),
+                    // then count + check cooling escalation thresholds.
+                    incrementAndEscalate(record.clearWontFix());
                 } else {
-                    // Cooling, or still won't-fix, or a duplicate created earlier this batch: silent count.
-                    dedupRepository.save(record.incrementOccurrence());
+                    // Cooling, or still won't-fix, or a duplicate created earlier this batch: count +
+                    // check escalation (cooling fires at every threshold; won't-fix only at 1000×).
+                    incrementAndEscalate(record);
                 }
             } else if (!newByHash.containsKey(hash)) {
                 if (suppressed.contains(hash)) {
@@ -219,6 +239,39 @@ public class PollService implements PollUseCase {
             }
         }
         return List.copyOf(newByHash.values());
+    }
+
+    /**
+     * Increment an active record's occurrence count and fire an escalation re-notification if the new count
+     * crosses a configured threshold (FR-11/FR-12/FR-13). The threshold fired is the <strong>largest</strong>
+     * configured value greater than {@code lastNotifiedThreshold} (treating {@code null} as 0) that the count
+     * has reached, and {@code lastNotifiedThreshold} advances to it. In normal operation each {@link ErrorLog}
+     * increments by exactly 1, so only one rung is ever in range and this equals "the next rung" — thresholds
+     * fire in sequence during backlog catchup (FR-13, no special branch). Picking the largest (rather than the
+     * smallest) makes a multi-rung jump — e.g. a count persisted ahead of {@code lastNotifiedThreshold} after
+     * {@code escalation-thresholds} is reconfigured between restarts — report the true milestone reached
+     * instead of a misleading lower rung; the skipped lower rungs are subsumed (each still fires at most once).
+     *
+     * <p>{@code lastNotifiedThreshold} advances for BOTH cooling and won't-fix records, but the line is
+     * delivered only when the record is cooling OR the fired threshold is the won't-fix volume override
+     * (1000×, FR-12). Escalation reuses {@code storedAnalysis} — never a fresh LLM call (FR-25/NFR-4).</p>
+     */
+    private void incrementAndEscalate(DeduplicationRecord record) {
+        DeduplicationRecord incremented = record.incrementOccurrence();
+        int lastNotified = incremented.lastNotifiedThreshold() == null ? 0 : incremented.lastNotifiedThreshold();
+        Integer fired = escalationThresholds.stream()
+                .filter(threshold -> threshold > lastNotified && incremented.occurrenceCount() >= threshold)
+                .max(Comparator.naturalOrder())
+                .orElse(null);
+        DeduplicationRecord toSave = incremented;
+        if (fired != null) {
+            toSave = incremented.withLastNotifiedThreshold(fired);
+            if (!toSave.wontFix() || fired == WONT_FIX_OVERRIDE_THRESHOLD) {
+                terminalOutput.printEscalation(toSave.fingerprint().humanLabel(), fired,
+                        toSave.firstSeenAt(), toSave.storedAnalysis(), toSave.wontFix());
+            }
+        }
+        dedupRepository.save(toSave);
     }
 
     /**

@@ -40,6 +40,7 @@ class PollServiceTest {
 	private static final Duration REFRESH = Duration.ofSeconds(5);
 	private static final Duration DEDUP_WINDOW = Duration.ofHours(24);
 	private static final int MAX_FAILURES = 3;
+	private static final List<Integer> ESCALATION_THRESHOLDS = List.of(10, 100, 1000);
 
 	private final FakeOpenSearch openSearch = new FakeOpenSearch();
 	private final FakeCheckpointRepository repository = new FakeCheckpointRepository();
@@ -51,7 +52,7 @@ class PollServiceTest {
 
 	private final PollService service = new PollService(
 			openSearch, repository, terminal, llm, suppression, fingerprintService, dedup,
-			DEDUP_WINDOW, REFRESH, MAX_FAILURES);
+			DEDUP_WINDOW, REFRESH, MAX_FAILURES, ESCALATION_THRESHOLDS);
 
 	// ---- Story 2.6: degradation / recovery (unchanged behaviour, must stay green) ----
 
@@ -374,6 +375,179 @@ class PollServiceTest {
 		assertEquals("NullPointerException@Foo:7", fp.humanLabel(), "full simple exception name (METIS decision)");
 	}
 
+	// ---- Story 4.5: escalation threshold re-notifications + won't-fix volume override ----
+
+	private static final String NPE_OWN_FRAME =
+			"java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)";
+	private static final LLMAnalysis CACHED = LLMAnalysis.available("npe on null label", "Foo.bar:7", "guard it");
+
+	/** Seed an active record with an explicit occurrence count / lastNotified / wontFix (createNew only gives count=1). */
+	private DeduplicationRecord seed(ErrorFingerprint fp, int count, Integer lastNotified, boolean wontFix,
+									 LLMAnalysis analysis) {
+		DeduplicationRecord record = new DeduplicationRecord(
+				fp, NOW, NOW.plus(DEDUP_WINDOW), count, lastNotified, wontFix, analysis);
+		dedup.seedActive(record);
+		return record;
+	}
+
+	@Test
+	void coolingCrossing10xFiresEscalationReusingStoredAnalysisNoLlm() {
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 9, null, false, CACHED);
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, terminal.escalationCalls, "crossing 10× fires one escalation");
+		assertEquals(10, terminal.lastEscalationThreshold);
+		assertFalse(terminal.lastEscalationWontFix, "cooling shape");
+		assertEquals(fp.humanLabel(), terminal.lastEscalationHumanLabel);
+		assertEquals(CACHED, terminal.lastEscalationStored, "stored analysis reused — no fresh call");
+		assertEquals(0, llm.analyseCalls, "escalation makes no LLM call (FR-25)");
+		assertEquals(0, terminal.analysisCalls, "cooling escalation is not a new-error block");
+		DeduplicationRecord after = dedup.byHash.get(fp.hash());
+		assertEquals(10, after.occurrenceCount());
+		assertEquals(10, after.lastNotifiedThreshold());
+	}
+
+	@Test
+	void coolingBelowNextThresholdDoesNotRefire() {
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 10, 10, false, CACHED);   // 10× already fired
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(0, terminal.escalationCalls, "11 < 100 ⇒ no threshold re-fires");
+		assertEquals(11, dedup.byHash.get(fp.hash()).occurrenceCount());
+		assertEquals(10, dedup.byHash.get(fp.hash()).lastNotifiedThreshold(), "unchanged");
+	}
+
+	@Test
+	void coolingCrossing100xAfter10xAlreadyFired() {
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 99, 10, false, CACHED);
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, terminal.escalationCalls);
+		assertEquals(100, terminal.lastEscalationThreshold, "the next ladder rung fires");
+		assertEquals(100, dedup.byHash.get(fp.hash()).lastNotifiedThreshold());
+	}
+
+	@Test
+	void coolingEscalationWithoutStoredAnalysisPassesNull() {
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 9, null, false, null);   // a failed initial analysis was never cached (FR-25)
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, terminal.escalationCalls);
+		assertNull(terminal.lastEscalationStored, "adapter renders this as \"no analysis on file\"");
+	}
+
+	@Test
+	void wontFixReaching1000xFiresVolumeOverrideAndKeepsFlag() {
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 999, 100, true, null);
+		suppression.hashes = Set.of(fp.hash());   // still suppressed
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, terminal.escalationCalls, "the 1000× override fires");
+		assertEquals(1000, terminal.lastEscalationThreshold);
+		assertTrue(terminal.lastEscalationWontFix, "won't-fix override shape");
+		assertEquals(0, llm.analyseCalls);
+		DeduplicationRecord after = dedup.byHash.get(fp.hash());
+		assertTrue(after.wontFix(), "override is a read-only nudge — wontFix NOT cleared (FR-12)");
+		assertEquals(1000, after.occurrenceCount());
+		assertEquals(1000, after.lastNotifiedThreshold());
+	}
+
+	@Test
+	void wontFixCrossing10xDoesNotPrintButAdvancesThreshold() {
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 9, null, true, null);
+		suppression.hashes = Set.of(fp.hash());
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(0, terminal.escalationCalls, "won't-fix fires only at 1000× — 10× is silent (FR-12)");
+		DeduplicationRecord after = dedup.byHash.get(fp.hash());
+		assertEquals(10, after.lastNotifiedThreshold(), "but the threshold still advances silently");
+		assertTrue(after.wontFix());
+	}
+
+	@Test
+	void coolingCountJumpedManyRungsFiresHighestReachedMilestone() {
+		// Count persisted ahead of lastNotifiedThreshold (e.g. escalation-thresholds reconfigured between
+		// restarts): the next increment must report the TRUE milestone (1000×), not a misleading lower rung.
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 999, null, false, CACHED);
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, terminal.escalationCalls, "fires once");
+		assertEquals(1000, terminal.lastEscalationThreshold, "reports the highest crossed rung, not 10×");
+		assertEquals(1000, dedup.byHash.get(fp.hash()).lastNotifiedThreshold(),
+				"lastNotifiedThreshold advances to the fired rung — lower rungs are subsumed, not deferred");
+	}
+
+	@Test
+	void wontFixCountJumpedToOverrideFiresImmediately() {
+		// A won't-fix count jumping straight past 1000 must fire the override now, not defer it behind 10×/100×.
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		seed(fp, 999, null, true, null);
+		suppression.hashes = Set.of(fp.hash());
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, terminal.escalationCalls, "the 1000× override fires on the jump");
+		assertEquals(1000, terminal.lastEscalationThreshold);
+		assertTrue(terminal.lastEscalationWontFix);
+		assertTrue(dedup.byHash.get(fp.hash()).wontFix(), "still a read-only nudge");
+	}
+
+	@Test
+	void escalationFiresInSequenceWhenCountIsReconstructedWithinOneBatch() {
+		// 10 occurrences of a brand-new fingerprint in one batch (e.g. backlog catchup): the 1st is new
+		// (analysed once), occurrences 2-10 increment until the 10th crosses 10× — fires once, in sequence.
+		ErrorLog error = errorIn("svc", NPE_OWN_FRAME);
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error, error, error, error, error, error, error, error, error, error);
+
+		service.poll();
+
+		assertEquals(1, llm.analyseCalls, "the new fingerprint is analysed once (NFR-4)");
+		assertEquals(1, terminal.analysisCalls);
+		assertEquals(1, terminal.escalationCalls, "crossing 10× during catchup fires once");
+		assertEquals(10, terminal.lastEscalationThreshold);
+		assertEquals(10, dedup.only().occurrenceCount());
+	}
+
 	private static ErrorLog errorIn(String service) {
 		return errorIn(service, "java.lang.NullPointerException");
 	}
@@ -420,11 +594,16 @@ class PollServiceTest {
 		int degradedCalls;
 		int recoveryCalls;
 		int wontFixLabelCalls;
+		int escalationCalls;
 		int lastDegradedFailures;
 		String lastAnalysisHumanLabel;
 		String lastAnalysisHash;
 		String lastWontFixHumanLabel;
 		String lastWontFixHash;
+		int lastEscalationThreshold;
+		boolean lastEscalationWontFix;
+		String lastEscalationHumanLabel;
+		LLMAnalysis lastEscalationStored;
 
 		@Override
 		public void printProgress(String serviceName, int count) {
@@ -444,6 +623,16 @@ class PollServiceTest {
 			wontFixLabelCalls++;
 			lastWontFixHumanLabel = humanLabel;
 			lastWontFixHash = hash;
+		}
+
+		@Override
+		public void printEscalation(String humanLabel, int threshold, Instant firstSeen, LLMAnalysis stored,
+									boolean wontFix) {
+			escalationCalls++;
+			lastEscalationThreshold = threshold;
+			lastEscalationWontFix = wontFix;
+			lastEscalationHumanLabel = humanLabel;
+			lastEscalationStored = stored;
 		}
 
 		@Override

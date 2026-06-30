@@ -35,9 +35,9 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-17
-last_updated: 2026-06-30 (Story 4.4 implemented + code-reviewed → done; epic-4 in-progress (4.5 remains).
-                          Prior: 4.3 → done; 4.2 → done; 4.1 → review; 2.4/2.5/3.1/3.2 → done; 2.6 → review.
-                          Tests green: 72 pass / 1 skipped.)
+last_updated: 2026-07-01 (Story 4.5 implemented + code-reviewed → done. epic-4 stays in-progress ONLY because
+                          4.1 remains in review (never code-reviewed); 4.2/4.3/4.4/4.5 all done. Prior:
+                          2.4/2.5/3.1/3.2 → done; 2.6 → review. Tests green: 84 pass / 1 skipped.)
 project: logguard-ai
 project_key: NOKEY
 tracking_system: file-system
@@ -128,5 +128,28 @@ development_status:
   # same-batch label leans on transactional autoflush, not a local seen-set; no seeded-expired wontFix AC#3
   # unit test — fake ignores expiry). 3 findings dismissed. Suite 72 pass / 1 skipped.
   4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: done
-  4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: backlog
+  # 4.5: story drafted (FR-11 cooling escalation re-notifications at configurable thresholds reusing the
+  # stored analysis — no fresh LLM call; FR-12 won't-fix 1000× volume override as a read-only nudge that does
+  # NOT clear wontFix; FR-13 fires during backlog catchup). Authoritative algorithm from spec
+  # CheckEscalationThreshold/DeliverEscalation: fire the smallest threshold > lastNotifiedThreshold that the
+  # count has reached (one per +1 increment → in sequence); lastNotifiedThreshold advances for BOTH states but
+  # delivers only when !wontFix OR threshold==1000. Adds printEscalation to TerminalOutputPort (⚠️ ESCALATION
+  # constant) + withLastNotifiedThreshold() wither; threads escalation-thresholds into the PollService
+  # constructor (new param — ripples to DomainServiceConfig + PollServiceTest). NO schema/config/LogguardProperties
+  # change (field + YAML key already present). Open (non-blocking) for METIS: threshold rendering (raw 1000× vs
+  # 1,000×); literal-1000 override threshold vs largest-configured.
+  # 4.5 IMPLEMENTED via dev-story: PollService.incrementAndEscalate fires the smallest configured threshold
+  # above lastNotifiedThreshold the count reached, reusing storedAnalysis (no LLM call); won't-fix delivers the
+  # override only at literal 1000 (wontFix NOT cleared), 10/100 advance the threshold silently; backlog catchup
+  # fires in sequence (no special branch). printEscalation on the port/adapter (ESCALATION constant; cooling
+  # 2-line + won't-fix 1-line) + DeduplicationRecord.withLastNotifiedThreshold(); escalation-thresholds threaded
+  # into the PollService constructor via DomainServiceConfig (field + YAML key already existed — no
+  # schema/config/LogguardProperties change). METIS decisions: raw-integer rendering; literal-1000 override.
+  # +7 PollServiceTest, +3 TerminalOutputAdapterTest. Suite 82 pass / 1 skipped.
+  # Code review done (Opus 4.8, 3 adversarial lenses): all 10 ACs PASS. 1 patch applied — threshold selector
+  # .min() -> .max() so a count that jumped multiple rungs (e.g. escalation-thresholds reconfigured between
+  # restarts) reports the true milestone (1000x) instead of a misleading lower rung (METIS chose harden over
+  # spec-literal min), +2 jump tests. 1 item deferred (no non-positive-threshold config validation), 6
+  # dismissed. Suite 84 pass / 1 skipped.
+  4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: done
   epic-4-retrospective: optional

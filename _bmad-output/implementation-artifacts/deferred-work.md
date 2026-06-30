@@ -102,3 +102,16 @@ in-story (humanLabel degenerate-guard hardening). Two items deferred by decision
   by the Story 4.2 adapter tests, so behaviour is covered — only the single end-to-end expired-then-relabel
   unit test is missing. Adding it cleanly would require teaching the fake to filter expiry. File:
   `PollServiceTest.java`.
+
+## Deferred from: code review of 4-5-escalation-threshold-re-notifications (2026-07-01, Opus 4.8)
+
+Adversarial review (Blind Hunter / Edge Case Hunter / Acceptance Auditor). All 10 ACs passed. One decision item
+handled separately (threshold-selection `.min()` vs largest-rung). One item deferred:
+
+- **No validation of non-positive / nonsensical `escalation-thresholds` entries** — a `0` or negative entry in
+  `logguard.escalation-thresholds` is silently inert (the `threshold > lastNotified` filter with `lastNotified`
+  starting at 0 means a `0` never fires, and a negative never satisfies `> 0`), rather than being rejected at
+  startup. Duplicates are behaviourally harmless (`.sorted()` keeps both; the `>` + `lastNotified` advance
+  dedupe). Benign — operator-controlled config, no wrong state or crash — but a startup validation that rejects
+  non-positive thresholds would fail fast on misconfiguration. File: `PollService.java` (constructor, ~99-101)
+  or `LogguardProperties`.

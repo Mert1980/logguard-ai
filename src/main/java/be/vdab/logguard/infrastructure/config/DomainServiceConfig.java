@@ -36,6 +36,6 @@ public class DomainServiceConfig {
         return new PollService(openSearchPort, checkpointRepository, terminalOutput, llmPort,
                 suppressionFilePort, fingerprintService, dedupRepository,
                 properties.deduplicationWindow(), properties.opensearch().refreshWindow(),
-                properties.maxConsecutivePollFailures());
+                properties.maxConsecutivePollFailures(), properties.escalationThresholds());
     }
 }
