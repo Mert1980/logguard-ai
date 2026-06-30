@@ -97,7 +97,12 @@ class SuppressionFileAdapterTest {
 		}
 
 		@Override
-		public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis) {
+		public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis,
+								  String humanLabel, String hash) {
+		}
+
+		@Override
+		public void printWontFixLabel(String humanLabel, String hash) {
 		}
 
 		@Override

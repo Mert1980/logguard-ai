@@ -44,4 +44,15 @@ public record DeduplicationRecord(
         return new DeduplicationRecord(fingerprint, firstSeenAt, expiresAt, occurrenceCount,
                 lastNotifiedThreshold, wontFix, analysis);
     }
+
+    /**
+     * Same record with {@code wontFix} cleared (every other field unchanged). Used by the FR-19
+     * unsuppression path when a hash is removed from {@code suppression.txt} while its window is still
+     * active: the record transitions from won't-fix back to cooling. Typically chained with
+     * {@link #incrementOccurrence()}.
+     */
+    public DeduplicationRecord clearWontFix() {
+        return new DeduplicationRecord(fingerprint, firstSeenAt, expiresAt, occurrenceCount,
+                lastNotifiedThreshold, false, storedAnalysis);
+    }
 }

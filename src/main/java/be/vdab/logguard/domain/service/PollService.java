@@ -22,6 +22,7 @@ import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
 import java.util.Optional;
+import java.util.Set;
 import java.util.stream.Collectors;
 
 /**
@@ -39,9 +40,15 @@ import java.util.stream.Collectors;
  * <p>Deduplication gate (Story 4.2): each error is fingerprinted; a fingerprint with no active
  * {@link DeduplicationRecord} is new (analysed once, cached, displayed), while an active one only
  * increments the occurrence count — silently. This bounds LLM calls to unique fingerprints per cycle
- * (NFR-4). NOT yet wired (their own stories): suppression-file consumption / won't-fix (Story 4.3/4.4 —
- * the port is reloaded each cycle here for the FR-14 ordering, but its result is not consulted yet, so
- * records are always created with {@code wontFix=false}), and escalation re-notifications (Story 4.5).</p>
+ * (NFR-4).</p>
+ *
+ * <p>Won't-fix suppression (Story 4.4): the suppression set reloaded each cycle (FR-14) is now consumed
+ * by the gate. A brand-new fingerprint whose hash is suppressed is recorded {@code wontFix=true}
+ * immediately — no LLM, no service block — and the {@code ⚑} label prints once (won't-fix-from-birth,
+ * FR-8/FR-17). An active won't-fix record whose hash has been removed from the file is unsuppressed on its
+ * next encounter ({@code clearWontFix}, FR-19). Every displayed block also carries the FR-18 Fingerprint
+ * line. NOT yet wired (Story 4.5): escalation re-notifications and the won't-fix volume override — the
+ * cooling and won't-fix paths only increment the count silently and never touch {@code lastNotifiedThreshold}.</p>
  */
 public class PollService implements PollUseCase {
 
@@ -90,10 +97,10 @@ public class PollService implements PollUseCase {
         PollCheckpoint checkpoint = current.get();
 
         // FR-14: reload the suppression list FIRST, before any error in this batch is processed, so a
-        // hot-edited file takes effect within one cycle. Stub returns empty today; Epic 4's dedup gate
-        // will consume the result. The call's ordering is the contract (Story 4.3 also surfaces an
+        // hot-edited file takes effect within one cycle. The dedup gate (Story 4.4) consumes the result;
+        // its reload-before-processing ordering is the contract (Story 4.3 also surfaces an
         // "unreadable → last known state" warning here).
-        suppressionFilePort.loadHashes();
+        Set<String> suppressed = suppressionFilePort.loadHashes();
 
         // Snapshot the poll start BEFORE querying; the checkpoint advances to here (minus a refresh
         // safety-lag) so errors arriving mid-cycle are picked up next time rather than skipped.
@@ -117,7 +124,7 @@ public class PollService implements PollUseCase {
 
         // FR-8: three-state dedup gate, two-phase so the progress line counts only errors that will
         // actually be analysed/shown and an all-duplicate service prints nothing.
-        List<ErrorLog> newErrors = gateAndCollectNew(errors);
+        List<ErrorLog> newErrors = gateAndCollectNew(errors, suppressed);
         if (!newErrors.isEmpty()) {
             Map<String, List<ErrorLog>> byService = newErrors.stream()
                     .collect(Collectors.groupingBy(
@@ -164,27 +171,51 @@ public class PollService implements PollUseCase {
     }
 
     /**
-     * Phase 1 of the dedup gate: fingerprint every error and update its {@link DeduplicationRecord}.
-     * An active record (cooling) only has its occurrence count incremented — silent, no LLM, no output
-     * (FR-8). A fingerprint with no active record is new: create the record now (so a duplicate later in
-     * the SAME batch is found active and increments instead of being analysed twice — NFR-4) and return
-     * its first occurrence for analysis in phase 2. Suppression is not consulted yet (Story 4.4), so new
-     * records are always created with {@code wontFix=false}.
+     * Phase 1 of the dedup gate: fingerprint every error and update its {@link DeduplicationRecord},
+     * consulting the {@code suppressed} hash set reloaded this cycle (FR-14). Per error:
+     * <ul>
+     *   <li><b>Active record present</b> — increment the count silently (no LLM, no output, FR-8/FR-10).
+     *       If the record is {@code wontFix} but its hash is no longer suppressed, also clear the flag
+     *       first (FR-19 unsuppression → back to cooling).</li>
+     *   <li><b>No active record, first seen this batch, hash suppressed</b> — create a {@code wontFix=true}
+     *       record immediately (won't-fix-from-birth, FR-8 exception / FR-17), print the {@code ⚑} label
+     *       once for this window, and do NOT collect it for analysis.</li>
+     *   <li><b>No active record, first seen this batch, not suppressed</b> — create a {@code wontFix=false}
+     *       record (count=1, persisted before phase-2 analysis so a duplicate later in the SAME batch is
+     *       found active and increments instead of being analysed twice — NFR-4) and collect it.</li>
+     * </ul>
+     * Unsuppression is event-driven (next encounter), not an eager cycle-start sweep: the set is reloaded
+     * each cycle, so a recurring fingerprint sees its cleared state on its very next occurrence, while one
+     * that has stopped occurring keeps a harmless stale flag until it expires (never matched, never shown).
+     * This is why {@code DeduplicationRecordRepository} deliberately has no bulk "find all won't-fix" query.
      */
-    private List<ErrorLog> gateAndCollectNew(List<ErrorLog> errors) {
+    private List<ErrorLog> gateAndCollectNew(List<ErrorLog> errors, Set<String> suppressed) {
         Instant now = Instant.now();
         // Preserve first-seen order of new fingerprints; one entry per fingerprint hash.
         Map<String, ErrorLog> newByHash = new LinkedHashMap<>();
         for (ErrorLog error : errors) {
             ErrorFingerprint fingerprint = fingerprintService.compute(error);
+            String hash = fingerprint.hash();
             Optional<DeduplicationRecord> active = dedupRepository.findActiveByFingerprint(fingerprint);
             if (active.isPresent()) {
-                // Cooling (or a duplicate already created earlier this batch): increment silently.
-                dedupRepository.save(active.get().incrementOccurrence());
-            } else if (!newByHash.containsKey(fingerprint.hash())) {
-                // New fingerprint, first occurrence: persist count=1 before phase-2 analysis.
-                dedupRepository.save(DeduplicationRecord.createNew(fingerprint, now, deduplicationWindow, false));
-                newByHash.put(fingerprint.hash(), error);
+                DeduplicationRecord record = active.get();
+                if (record.wontFix() && !suppressed.contains(hash)) {
+                    // FR-19: hash removed from the file while still in-window → unsuppress, then count.
+                    dedupRepository.save(record.clearWontFix().incrementOccurrence());
+                } else {
+                    // Cooling, or still won't-fix, or a duplicate created earlier this batch: silent count.
+                    dedupRepository.save(record.incrementOccurrence());
+                }
+            } else if (!newByHash.containsKey(hash)) {
+                if (suppressed.contains(hash)) {
+                    // Won't-fix-from-birth: record it, acknowledge once, skip LLM + display entirely.
+                    dedupRepository.save(DeduplicationRecord.createNew(fingerprint, now, deduplicationWindow, true));
+                    terminalOutput.printWontFixLabel(fingerprint.humanLabel(), hash);
+                } else {
+                    // New fingerprint, first occurrence: persist count=1 before phase-2 analysis.
+                    dedupRepository.save(DeduplicationRecord.createNew(fingerprint, now, deduplicationWindow, false));
+                    newByHash.put(hash, error);
+                }
             }
         }
         return List.copyOf(newByHash.values());
@@ -214,7 +245,9 @@ public class PollService implements PollUseCase {
                     log.warn("Dedup record for fingerprint {} not found when caching its analysis", fingerprint.hash());
                 }
             }
-            terminalOutput.printAnalysis(index++, errors.size(), error, analysis);
+            // FR-18/FR-30: every displayed block carries the copy-pasteable Fingerprint line.
+            terminalOutput.printAnalysis(index++, errors.size(), error, analysis,
+                    fingerprint.humanLabel(), fingerprint.hash());
         }
     }
 }

@@ -50,6 +50,59 @@ public record ErrorFingerprint(
         }
     }
 
+    /**
+     * Human-readable label derived purely from this fingerprint (FR-18 / FR-32), used both as the final
+     * {@code Fingerprint:} line of every new-error block and as the {@code ⚑ Known / Won't Fix} label.
+     * Format {@code {SimpleExceptionName}@{SimpleClass}:{line}} — e.g. a {@code NullPointerException} thrown
+     * at {@code be.vdab.label.LabelV2Config.getForwardingSource:21} → {@code NullPointerException@LabelV2Config:21}.
+     *
+     * <p>The label is COMPUTED from the fingerprint, not read from the suppression-file comment: the Story 4.3
+     * port is frozen to {@code Set<String> loadHashes()} (comments are parsed away), and the hash is the real
+     * key — the label is only a recognisable cue. Degenerate fingerprints (no parseable own-code/framework
+     * frame, so {@code throwingMethod} is blank, equals the exception type, or is the {@code "unknown"}
+     * fallback) collapse to just the simple exception name with no {@code @class} suffix.</p>
+     */
+    public String humanLabel() {
+        String exception = simpleExceptionName();
+        String classAndLine = classWithLine();
+        return classAndLine == null ? exception : exception + "@" + classAndLine;
+    }
+
+    /** Simple name of {@code exceptionType} (after the last {@code .}); {@code "UnknownError"} when blank or a degenerate type (e.g. a trailing dot) leaves nothing after it. */
+    private String simpleExceptionName() {
+        String type = exceptionType == null ? "" : exceptionType.strip();
+        if (type.isEmpty()) {
+            return "UnknownError";
+        }
+        int lastDot = type.lastIndexOf('.');
+        String simple = lastDot >= 0 ? type.substring(lastDot + 1) : type;
+        return simple.isEmpty() ? "UnknownError" : simple;
+    }
+
+    /**
+     * {@code {SimpleClass}:{line}} from {@code throwingMethod} ({@code SimpleClass.method:line}); class is the
+     * segment before the first {@code .}, line the segment after the last {@code :} (omitted when absent —
+     * e.g. a native frame). Returns {@code null} for degenerate {@code throwingMethod} values so the caller
+     * drops the {@code @class} suffix entirely.
+     */
+    private String classWithLine() {
+        String method = throwingMethod == null ? "" : throwingMethod.strip();
+        // FingerprintService's degenerate fallback copies exceptionType VERBATIM into throwingMethod, so
+        // compare against the stripped exceptionType (not the raw value) — otherwise a whitespace-padded
+        // type slips past the guard and gets split as a FQCN, yielding a garbage @package suffix.
+        String type = exceptionType == null ? "" : exceptionType.strip();
+        if (method.isEmpty() || method.equals("unknown") || method.equals(type)) {
+            return null;
+        }
+        int firstDot = method.indexOf('.');
+        String simpleClass = firstDot >= 0 ? method.substring(0, firstDot) : method;
+        int lastColon = method.lastIndexOf(':');
+        if (lastColon >= 0 && lastColon < method.length() - 1) {
+            return simpleClass + ":" + method.substring(lastColon + 1);
+        }
+        return simpleClass;
+    }
+
     private static String nullToEmpty(String value) {
         return value == null ? "" : value;
     }

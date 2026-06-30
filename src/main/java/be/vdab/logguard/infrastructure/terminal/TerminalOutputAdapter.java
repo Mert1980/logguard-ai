@@ -42,7 +42,8 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
     }
 
     @Override
-    public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis) {
+    public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis,
+                              String humanLabel, String hash) {
         System.out.println("[" + index + "/" + total + "] " + header(error));
         if (analysis.llmAvailable()) {
             System.out.println("  Root cause:       " + dash(analysis.rootCause()));
@@ -53,6 +54,18 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
             System.out.println("  Likely location:  -");
             System.out.println("  Suggested action: -");
         }
+        // FR-18/FR-30: every new-error block ends with the copy-pasteable fingerprint identifier, whether
+        // or not the analysis succeeded. Two spaces before the bracketed hash, square brackets around it.
+        System.out.println("  Fingerprint: " + humanLabel + "  [" + hash + "]");
+        System.out.flush();
+    }
+
+    @Override
+    public void printWontFixLabel(String humanLabel, String hash) {
+        // FR-17/FR-32: standalone acknowledgement line, no brackets around the hash (matches the
+        // suppression-file line format `hash  # HumanLabel`). Uses the WONT_FIX status constant (Story 2.4 AC).
+        System.out.println();
+        System.out.println(WONT_FIX + " Known / Won't Fix: " + humanLabel + "  " + hash);
         System.out.flush();
     }
 

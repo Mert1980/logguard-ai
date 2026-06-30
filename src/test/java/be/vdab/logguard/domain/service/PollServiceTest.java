@@ -262,6 +262,118 @@ class PollServiceTest {
 		assertTrue(repository.saved.lastSuccessfulPollAt().isAfter(CHECKPOINT_AT), "checkpoint advances");
 	}
 
+	// ---- Story 4.4: won't-fix suppression + Fingerprint line ----
+
+	@Test
+	void wontFixFromBirth_suppressedNewError_noLlmNoBlock_printsLabelOnce_advancesCheckpoint() {
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		ErrorLog error = errorIn("svc", "java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)");
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		suppression.hashes = Set.of(fp.hash());
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(0, llm.analyseCalls, "won't-fix-from-birth makes no LLM call");
+		assertEquals(0, terminal.progressCalls, "no service block for a suppressed error");
+		assertEquals(0, terminal.analysisCalls, "not buffered for analysis/display");
+		assertEquals(1, terminal.wontFixLabelCalls, "the ⚑ label prints exactly once");
+		assertEquals(fp.humanLabel(), terminal.lastWontFixHumanLabel);
+		assertEquals(fp.hash(), terminal.lastWontFixHash);
+		DeduplicationRecord record = dedup.only();
+		assertTrue(record.wontFix(), "record created with wontFix=true immediately");
+		assertEquals(1, record.occurrenceCount());
+		assertNull(record.storedAnalysis(), "no analysis cached");
+		assertNotNull(repository.saved, "checkpoint still advances on a won't-fix-only cycle");
+		assertTrue(repository.saved.lastSuccessfulPollAt().isAfter(CHECKPOINT_AT));
+	}
+
+	@Test
+	void wontFixFromBirth_duplicateInSameBatch_labelOnce_countTwo() {
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		ErrorLog error = errorIn("svc", "java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)");
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		suppression.hashes = Set.of(fp.hash());
+		openSearch.toReturn = List.of(error, error);
+
+		service.poll();
+
+		assertEquals(1, terminal.wontFixLabelCalls, "label at most once per window even with a same-batch duplicate");
+		assertEquals(0, llm.analyseCalls);
+		assertEquals(2, dedup.only().occurrenceCount(), "both occurrences counted (FR-10)");
+	}
+
+	@Test
+	void activeWontFix_stillSuppressed_silentIncrementNoLabel() {
+		ErrorLog error = errorIn("svc", "java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)");
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		dedup.seedActive(DeduplicationRecord.createNew(fp, NOW, DEDUP_WINDOW, true));
+		suppression.hashes = Set.of(fp.hash());
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(0, llm.analyseCalls);
+		assertEquals(0, terminal.analysisCalls);
+		assertEquals(0, terminal.wontFixLabelCalls, "an already-acknowledged won't-fix prints no new label");
+		DeduplicationRecord record = dedup.byHash.get(fp.hash());
+		assertTrue(record.wontFix(), "still won't-fix");
+		assertEquals(2, record.occurrenceCount());
+	}
+
+	@Test
+	void unsuppressionWithinWindow_clearsFlag_incrementsSilently_printsNothing() {
+		ErrorLog error = errorIn("svc", "java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)");
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		dedup.seedActive(DeduplicationRecord.createNew(fp, NOW, DEDUP_WINDOW, true));
+		suppression.hashes = Set.of();   // hash removed from suppression.txt this cycle
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(0, llm.analyseCalls, "cooling ⇒ no fresh analysis (escalation is Story 4.5)");
+		assertEquals(0, terminal.analysisCalls, "nothing printed on unsuppression");
+		assertEquals(0, terminal.wontFixLabelCalls);
+		DeduplicationRecord record = dedup.byHash.get(fp.hash());
+		assertFalse(record.wontFix(), "wontFix cleared (FR-19)");
+		assertEquals(2, record.occurrenceCount(), "occurrence still counted");
+	}
+
+	@Test
+	void unsuppressionExpired_treatedAsBrandNewError() {
+		// An expired record is invisible to findActiveByFingerprint (the Story 4.2 adapter filters it; the
+		// fake models that invisibility as absence). With the hash also removed, the error is brand-new again
+		// — no special code path (AC #5).
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		ErrorLog error = errorIn("svc", "java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)");
+		suppression.hashes = Set.of();
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, llm.analyseCalls, "expired + unsuppressed ⇒ analysed as a new error");
+		assertEquals(1, terminal.analysisCalls);
+		assertEquals(0, terminal.wontFixLabelCalls);
+		assertFalse(dedup.only().wontFix(), "fresh record is not won't-fix");
+	}
+
+	@Test
+	void newErrorBlock_carriesComputedFingerprintLine_fullSimpleName() {
+		repository.stored = Optional.of(new PollCheckpoint(CHECKPOINT_AT, null, 0));
+		ErrorLog error = errorIn("svc", "java.lang.NullPointerException\n\tat be.vdab.app.Foo.bar(Foo.java:7)");
+		ErrorFingerprint fp = fingerprintService.compute(error);
+		openSearch.toReturn = List.of(error);
+
+		service.poll();
+
+		assertEquals(1, terminal.analysisCalls);
+		assertEquals(fp.humanLabel(), terminal.lastAnalysisHumanLabel, "Fingerprint line uses the computed label");
+		assertEquals(fp.hash(), terminal.lastAnalysisHash, "and the copy-pasteable hash");
+		assertEquals("NullPointerException@Foo:7", fp.humanLabel(), "full simple exception name (METIS decision)");
+	}
+
 	private static ErrorLog errorIn(String service) {
 		return errorIn(service, "java.lang.NullPointerException");
 	}
@@ -307,7 +419,12 @@ class PollServiceTest {
 		int analysisCalls;
 		int degradedCalls;
 		int recoveryCalls;
+		int wontFixLabelCalls;
 		int lastDegradedFailures;
+		String lastAnalysisHumanLabel;
+		String lastAnalysisHash;
+		String lastWontFixHumanLabel;
+		String lastWontFixHash;
 
 		@Override
 		public void printProgress(String serviceName, int count) {
@@ -315,8 +432,18 @@ class PollServiceTest {
 		}
 
 		@Override
-		public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis) {
+		public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis,
+								  String humanLabel, String hash) {
 			analysisCalls++;
+			lastAnalysisHumanLabel = humanLabel;
+			lastAnalysisHash = hash;
+		}
+
+		@Override
+		public void printWontFixLabel(String humanLabel, String hash) {
+			wontFixLabelCalls++;
+			lastWontFixHumanLabel = humanLabel;
+			lastWontFixHash = hash;
 		}
 
 		@Override
@@ -348,9 +475,11 @@ class PollServiceTest {
 	}
 
 	private static final class FakeSuppression implements SuppressionFilePort {
+		Set<String> hashes = Set.of();
+
 		@Override
 		public Set<String> loadHashes() {
-			return Set.of();
+			return hashes;
 		}
 	}
 

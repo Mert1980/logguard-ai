@@ -73,3 +73,32 @@ on read failure). One item deferred by decision:
   hot-edit-via-atomic-replace could momentarily un-suppress every won't-fix error. Revisit when wiring the
   set into the dedup gate — e.g. keep last-known on transient absence, or detect the rename window.
   File: `SuppressionFileAdapter.java` (lines 48-50).
+  **UPDATE (Story 4.4, 2026-06-30): set now consumed by the dedup gate. METIS consciously ACCEPTED this
+  transient** — the window is sub-second and self-corrects on the next poll (the re-created file is read,
+  re-suppressing the affected hashes; the only cost is one cycle of spurious analyse-as-new). No 4.3 adapter
+  change was made (out of Story 4.4's "no 4.3 change" scope). Still revisitable if the spurious-analysis
+  cycle ever proves noticeable in practice.
+
+## Deferred from: code review of 4-4-wont-fix-suppression-integration (2026-06-30, Opus 4.8)
+
+Adversarial review (Blind Hunter / Edge Case Hunter / Acceptance Auditor). All 10 ACs passed; one patch applied
+in-story (humanLabel degenerate-guard hardening). Two items deferred by decision:
+
+- **Won't-fix-from-birth same-batch label relies on transactional autoflush, not a local seen-set** — the
+  non-suppressed new-error path is guarded by BOTH `newByHash` and the repo, but the suppressed-from-birth
+  path adds nothing to `newByHash`, so a second occurrence of the same suppressed hash in one batch is kept
+  from re-creating + re-labelling ONLY by `findActiveByFingerprint` seeing the row just `save`d earlier in the
+  loop. That holds today because the whole poll is one `@Transactional` cycle (`TransactionalPollUseCase`) and
+  Hibernate autoflushes before the query. If the gate is ever moved out of a single autoflushing transaction
+  (or the repo becomes non-flushing), the `⚑` label could print N times. Note: same-batch duplicate *counting*
+  already depends on this autoflush for BOTH paths (pre-existing, Story 4.2). Fix when relevant: track
+  suppressed-from-birth hashes in a local `Set<String>` guarding the create+label. File: `PollService.java`
+  (lines ~209-213).
+- **AC#3 (expired won't-fix re-encounter) covered only via an unseeded-record proxy** — `FakeDeduplicationRepository`
+  deliberately ignores `expiresAt` (so existing seeded-active tests with past timestamps still read as active),
+  which means no `PollServiceTest` seeds an actually-expired `wontFix=true` row and asserts it is recreated
+  won't-fix-from-birth with a fresh-window label. AC#3's precondition ("`findActiveByFingerprint` returns
+  empty") is exercised by the from-birth + unsuppression-expired tests, and the real expiry filtering is owned
+  by the Story 4.2 adapter tests, so behaviour is covered — only the single end-to-end expired-then-relabel
+  unit test is missing. Adding it cleanly would require teaching the fake to filter expiry. File:
+  `PollServiceTest.java`.

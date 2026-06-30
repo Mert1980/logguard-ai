@@ -35,8 +35,9 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-17
-last_updated: 2026-06-30 (Story 4.3 code-reviewed → done; epic-4 in-progress. Prior: 4.2 → done; 4.1 → review;
-                          2.4/2.5/3.1/3.2 → done; 2.6 → review. Tests green: 56 pass / 1 skipped.)
+last_updated: 2026-06-30 (Story 4.4 implemented + code-reviewed → done; epic-4 in-progress (4.5 remains).
+                          Prior: 4.3 → done; 4.2 → done; 4.1 → review; 2.4/2.5/3.1/3.2 → done; 2.6 → review.
+                          Tests green: 72 pass / 1 skipped.)
 project: logguard-ai
 project_key: NOKEY
 tracking_system: file-system
@@ -110,6 +111,22 @@ development_status:
   # SuppressionFilePort Javadoc refreshed. 1 item deferred to 4.4: absent-file wipes lastKnown vs unreadable
   # keeps it — atomic-save (delete-recreate) editors could momentarily un-suppress once the set is consumed.
   4-3-suppressionfile-adapter-with-hot-reload-ordering-guarantee-and-read-only-authority: done
-  4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: backlog
+  # 4.4: implemented (FR-8 won't-fix-from-birth + FR-17/32 ⚑ label, FR-18/30 Fingerprint output line,
+  # FR-19 unsuppression, computed HumanLabel). PollService.gateAndCollectNew now consumes the 4.3 suppression
+  # set (loaded-and-discarded until now): suppressed-new → wontFix=true record + ⚑ label once, no LLM/block;
+  # active-wontFix-still-suppressed/cooling → silent increment; hash removed in-window → clearWontFix()+
+  # increment, silent; expired re-encounter → no special branch (4.2 expiry filter). HumanLabel COMPUTED from
+  # the fingerprint (not the frozen-port file comment); METIS chose the FULL simple name
+  # (NullPointerException@LabelV2Config:21), not the NPE acronym. Atomic-save un-suppression window ACCEPTED
+  # by METIS (no 4.3 change; noted in deferred-work.md). printWontFixLabel + Fingerprint line on
+  # TerminalOutputPort; clearWontFix() on the record. No constructor/schema/config/wiring change. New
+  # ErrorFingerprintTest + TerminalOutputAdapterTest + 6 PollServiceTest cases. Suite 70 pass / 1 skipped.
+  # Code review done (Opus 4.8, 3 adversarial lenses): all 10 ACs PASS. 1 patch applied — humanLabel()
+  # degenerate-guard hardened (compare against STRIPPED exceptionType so a whitespace-padded type collapses
+  # instead of splitting into a garbage @package suffix; simpleExceptionName() falls back to UnknownError on
+  # an empty simple name), +2 ErrorFingerprintTest cases. 2 items deferred to deferred-work.md (won't-fix
+  # same-batch label leans on transactional autoflush, not a local seen-set; no seeded-expired wontFix AC#3
+  # unit test — fake ignores expiry). 3 findings dismissed. Suite 72 pass / 1 skipped.
+  4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: done
   4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: backlog
   epic-4-retrospective: optional
