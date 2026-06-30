@@ -329,6 +329,11 @@ class PollServiceTest {
 		public void printRecovery(Instant resumedAt) {
 			recoveryCalls++;
 		}
+
+		@Override
+		public void printSuppressionUnreadable() {
+			// not exercised by these tests
+		}
 	}
 
 	private static final class FakeLlm implements LlmPort {

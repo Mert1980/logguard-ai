@@ -73,6 +73,13 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
         System.out.flush();
     }
 
+    @Override
+    public void printSuppressionUnreadable() {
+        System.out.println();
+        System.out.println(ESCALATION + " Suppression file unreadable — using last known state");
+        System.out.flush();
+    }
+
     private static String dash(String value) {
         return (value == null || value.isBlank()) ? "-" : value.strip();
     }

@@ -22,4 +22,7 @@ public interface TerminalOutputPort {
 
     /** FR-35: one-time recovery line when OpenSearch becomes reachable again (Story 2.6). */
     void printRecovery(Instant resumedAt);
+
+    /** FR-15: the suppression file existed but could not be read/parsed — keeping the last known state. */
+    void printSuppressionUnreadable();
 }
