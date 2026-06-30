@@ -115,3 +115,22 @@ handled separately (threshold-selection `.min()` vs largest-rung). One item defe
   dedupe). Benign — operator-controlled config, no wrong state or crash — but a startup validation that rejects
   non-positive thresholds would fail fast on misconfiguration. File: `PollService.java` (constructor, ~99-101)
   or `LogguardProperties`.
+
+## Deferred from: code review of 4-1-errorfingerprint-computation (2026-07-01, Opus 4.8)
+
+Adversarial review (Blind Hunter / Edge Case Hunter / Acceptance Auditor). All 11 ACs passed on existing tests.
+One patch applied in-story (module-prefix regex fix in `FingerprintService`). Two items deferred:
+
+- **`LlmAdapter` has the same module-prefix regex limitation** — its `FRAME` pattern
+  (`^\s*at\s+([\w$.]+)\.[\w$<>]+\(`, LlmAdapter.java ~108) excludes `/`, so on a Java 9+ JVM it drops
+  module-prefixed frames (`java.base/…`) and would miss modularized `be.vdab` own-code frames when building
+  the LLM payload's own-code section. Lower impact than the fingerprint case (it only trims the payload, not
+  the dedup identity) and out of Story 4.1 scope (Story 3.2 is `done`). Same one-line fix: optional
+  `(?:[\w$.]+/)?` module prefix. File: `LlmAdapter.java`.
+- **`Caused by:` / suppressed sections flattened in `FingerprintService`** — `parseFrames` matches every `at`
+  line across the whole trace, so a wrapped exception's `throwingMethod` anchors on the OUTER wrapper's first
+  own-code frame and `stackTraceSequence` concatenates own-code frames from both the wrapper and the cause.
+  The real bug is usually the deepest `Caused by:`. This is a DOCUMENTED MVP decision (Story 4.1 Dev Notes
+  "Stack trace format": "treat the whole string uniformly … no nested-cause special handling required by the
+  AC"), recorded here for post-MVP: anchor the throw site on the deepest `Caused by:` own-code frame. File:
+  `FingerprintService.java` (~147-159).

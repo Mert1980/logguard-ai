@@ -118,6 +118,43 @@ class FingerprintServiceTest {
     }
 
     @Test
+    void modulePrefixedOwnCodeFrame_isParsed() {
+        // A modularized app renders own-code frames with a module segment before the FQCN.
+        String trace = """
+                java.lang.IllegalStateException: x
+                	at appmodule/be.vdab.app.Foo.bar(Foo.java:5)
+                	at java.base/java.lang.Thread.run(Thread.java:840)""";
+
+        ErrorFingerprint fp = service.compute(errorWith("java.lang.IllegalStateException", trace));
+
+        assertEquals("Foo.bar:5", fp.throwingMethod());
+        assertEquals("be.vdab.app.Foo.bar", fp.stackTraceSequence());
+    }
+
+    @Test
+    void frameworkFallback_allModulePrefixedFrames_doesNotCollapse_distinctTopmostFramesDiffer() {
+        // FR-7 / AC#5: a framework-only trace whose frames are ALL Java 9+ module-prefixed must still anchor
+        // on the topmost frame (not collapse to the exception-type-only degenerate fingerprint), and two such
+        // traces with different topmost frames must produce different fingerprints.
+        String traceThread = """
+                java.lang.StackOverflowError
+                	at java.base/java.lang.Thread.run(Thread.java:840)""";
+        String traceString = """
+                java.lang.StackOverflowError
+                	at java.base/java.lang.String.substring(String.java:1908)""";
+
+        ErrorFingerprint thread = service.compute(errorWith("java.lang.StackOverflowError", traceThread));
+        ErrorFingerprint string = service.compute(errorWith("java.lang.StackOverflowError", traceString));
+
+        // Anchored on the topmost frame, not the degenerate exceptionType fallback:
+        assertEquals("Thread.run:840", thread.throwingMethod());
+        assertEquals("java.lang.Thread.run", thread.stackTraceSequence());
+        assertNotEquals("", thread.stackTraceSequence(), "must not collapse to the degenerate empty sequence");
+        // Distinct topmost frames ⇒ distinct fingerprints despite the shared exception type:
+        assertNotEquals(thread.hash(), string.hash());
+    }
+
+    @Test
     void multiPrefixMatching_recognisesSecondPrefixAsOwnCode() {
         FingerprintService multi = new FingerprintService(List.of("be.vdab", "com.acme"));
         String trace = """

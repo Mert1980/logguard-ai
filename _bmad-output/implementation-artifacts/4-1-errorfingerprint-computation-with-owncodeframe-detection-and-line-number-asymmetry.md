@@ -4,7 +4,7 @@ baseline_commit: b5453e30c90907f8199f3723418f27217deea342
 
 # Story 4.1: ErrorFingerprint Computation with OwnCodeFrame Detection and Line-Number Asymmetry
 
-Status: review
+Status: done
 
 <!-- Note: Validation is optional. Run validate-create-story for quality check before dev-story. -->
 
@@ -60,6 +60,14 @@ so that two occurrences of the same bug produce the same fingerprint regardless 
   - [x] **Multi-prefix matching (AC #7):** construct with `List.of("be.vdab", "com.acme")` and assert a `com.acme.*` frame is treated as own-code.
   - [x] **Hash stability (AC #10):** same components → same `hash()`; different components → different `hash()`; `hash()` is 8 lowercase hex chars.
   - [x] **Null/blank safety (AC #11):** `null` stackTrace and blank stackTrace both return a non-null fingerprint with `stackTraceSequence == ""` and `throwingMethod` falling back to the exception type.
+
+## Review Findings
+
+Code review 2026-07-01 (Opus 4.8; Blind Hunter / Edge Case Hunter / Acceptance Auditor — all 3 layers ran, none failed). Acceptance Auditor: all 11 ACs PASS on the existing tests. The Blind + Edge hunters converged on one genuine bug the AC tests miss. 6 findings dismissed as noise (`Caused by:` is a documented MVP decision per Dev Notes; `$$Lambda$…/0x…` synthetic-trampoline frames dropped is acceptable — the real lambda frame parses; implicit header-skip is actually robust; 8-hex hash width is the documented design choice; `:-1`/non-numeric line locations don't crash; exceptionType-null-with-frames is tolerated by `hash()`'s `nullToEmpty` + 4.4's `humanLabel`).
+
+- [x] [Review][Patch] Module-prefixed frames never match the `FRAME` regex → framework-only fingerprint collapse [FingerprintService.java:30]. The FQCN class `[\w$.]+` excludes `/`, so a Java 9+ module frame (`at java.base/java.lang.Thread.run(Thread.java:840)`, or a modularized `<module>/be.vdab…`) fails to match and is dropped. A framework-only error whose frames are ALL module-prefixed parses to zero frames → degenerate `exceptionType`-only fingerprint, so two distinct such errors sharing an exception type collapse — **violated AC#5 / FR-7**. **FIXED**: `FRAME` now allows an optional `(?:[\w$.]+/)?` module prefix before the FQCN group (normal classpath frames unchanged); +2 `FingerprintServiceTest` cases (modularized own-code frame parsed; all-module-prefixed framework-only trace anchors on the topmost frame and distinct topmost frames differ). Suite 86 pass / 1 skipped.
+- [x] [Review][Defer] `LlmAdapter` (Story 3.2) has the SAME module-prefix regex limitation [LlmAdapter.java ~108] — its `FRAME` pattern would drop module-prefixed own-code frames from the LLM payload and miss modularized `be.vdab` frames. Out of Story 4.1 scope (3.2 is `done`); same one-line fix. — deferred, related pre-existing issue
+- [x] [Review][Defer] `Caused by:` / suppressed sections are flattened into one frame list; `throwingMethod` anchors on the wrapper's first own-code frame, not the root cause [FingerprintService.java:147-159] — a documented MVP decision (Dev Notes "Stack trace format": "treat the whole string uniformly … no nested-cause special handling required by the AC"). Tracked for post-MVP: prefer the deepest `Caused by:` own-code frame as the throw site. — deferred, documented MVP limitation
 
 ## Dev Notes
 
@@ -202,3 +210,4 @@ claude-opus-4-8 (Opus 4.8, 1M context)
 |---|---|
 | 2026-06-29 | Story 4.1 drafted via create-story context engine (ErrorFingerprint record + FingerprintService; line-number asymmetry from allium spec; frame-parsing reuse from LlmAdapter 3.2; hash algorithm specified — SHA-256 truncated to 8 hex). Status → ready-for-dev. |
 | 2026-06-29 | Story 4.1 implemented: `ErrorFingerprint` record (+ `hash()`) and pure-domain `FingerprintService` with own-code detection, framework-frame fallback, and the throwing_method/stack_trace_sequence line-number asymmetry. 11 hermetic tests added; full suite 41 pass / 1 skipped, no regressions. Status → review. |
+| 2026-07-01 | Code review (Opus 4.8; Blind Hunter / Edge Case Hunter / Acceptance Auditor). All 11 ACs PASS. 1 patch applied: `FRAME` regex now accepts an optional Java 9+ module prefix (`(?:[\w$.]+/)?`) so module-prefixed framework-only traces anchor on the topmost frame instead of collapsing to a degenerate fingerprint (closes the AC#5/FR-7 gap), +2 tests. 2 items deferred (`LlmAdapter` shares the regex gap; `Caused by:` root-cause anchoring — both in deferred-work.md), 6 dismissed. Suite 86 pass / 1 skipped. Status → done. |

@@ -22,12 +22,17 @@ import java.util.stream.Collectors;
 public class FingerprintService {
 
     /**
-     * Matches a stack frame line {@code at <fqcn>.<method>(<location>)}.
+     * Matches a stack frame line {@code at [<module>/]<fqcn>.<method>(<location>)}.
      * Group 1 = FQCN, group 2 = method, group 3 = source location
      * ({@code File.java:27} | {@code Native Method} | {@code Unknown Source}).
+     *
+     * <p>The optional {@code (?:[\w$.]+/)?} prefix consumes the Java 9+ module segment a JVM renders before
+     * the FQCN (e.g. {@code java.base/}java.lang.Thread.run, or {@code <appmodule>/}be.vdab.x.Foo.bar) so
+     * those frames parse instead of being silently dropped — otherwise a framework-only trace whose frames
+     * are all module-prefixed would collapse to a degenerate fingerprint (FR-7 / AC#5).</p>
      */
     private static final Pattern FRAME =
-            Pattern.compile("^\\s*at\\s+([\\w$.]+)\\.([\\w$<>]+)\\(([^)]*)\\)");
+            Pattern.compile("^\\s*at\\s+(?:[\\w$.]+/)?([\\w$.]+)\\.([\\w$<>]+)\\(([^)]*)\\)");
 
     private final List<String> ownCodePrefixes;
 
