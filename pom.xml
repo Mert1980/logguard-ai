@@ -104,6 +104,11 @@
 			<plugin>
 				<groupId>org.springframework.boot</groupId>
 				<artifactId>spring-boot-maven-plugin</artifactId>
+				<configuration>
+					<!-- Run in Maven's own JVM (not a forked child) so System.console() is
+					     available and the FirstRunInitializer lookback prompt (FR-2) works. -->
+					<fork>false</fork>
+				</configuration>
 			</plugin>
 		</plugins>
 	</build>

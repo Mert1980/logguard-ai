@@ -80,7 +80,7 @@ wsl docker compose up -d --build
 Wait until OpenSearch is healthy (~30s). Verify:
 
 ```powershell
-curl http://localhost:9200          # should return an OpenSearch JSON banner
+curl.exe http://localhost:9200          # should return an OpenSearch JSON banner
 ```
 
 ### 2. Make sure Ollama is running
@@ -103,11 +103,24 @@ New-Item -ItemType File suppression.txt   # only if it doesn't exist yet
 ### 4. Start LogGuard AI with demo-friendly settings
 
 The production defaults (5-minute poll, 24-hour dedup window, escalation at 10/100/1000) are
-too slow to show live. Shorten them so every feature is visible in seconds:
+too slow to show live. Shorten them so every feature is visible in seconds.
+
+Build the jar and run it directly from a **real PowerShell terminal** — this is the reliable
+way to get the interactive first-run prompt (running via `mvnw spring-boot:run` forks a child
+JVM, so `System.console()` is null and the prompt is skipped):
 
 ```powershell
-.\mvnw.cmd spring-boot:run "-Dspring-boot.run.arguments=--logguard.poll-interval=20s --logguard.deduplication-window=60s --logguard.escalation-thresholds=5,1000"
+# Build (JDK 21 required; the mvnw.cmd wrapper may be blocked by Group Policy — use the jar)
+.\mvnw.cmd -DskipTests package
+
+# Run with JDK 21 on the PATH for this session, then launch the jar
+$env:JAVA_HOME = "$env:USERPROFILE\.jdks\temurin-21.0.11"
+$env:PATH = "$env:JAVA_HOME\bin;$env:PATH"
+java -jar target\logguard-ai-0.0.1-SNAPSHOT.jar --logguard.poll-interval=20s --logguard.deduplication-window=60s --logguard.escalation-thresholds=5,1000
 ```
+
+> If your default `java` is older than 21 you'll get `UnsupportedClassVersionError` (class file
+> version 65.0) — the `JAVA_HOME`/`PATH` lines above point at JDK 21 to avoid that.
 
 - **`poll-interval=20s`** — a new cycle every 20s.
 - **`deduplication-window=60s`** — a fingerprint's window expires after 60s, so the
@@ -124,8 +137,9 @@ First run detected. Process last [N] hours of history? (default: 24h)
 Type `0` and press Enter (start "now", so only errors you trigger during the demo are picked
 up — keeps the output clean). Blank/invalid input defaults to 24h.
 
-> ⚠️ The lookback prompt only appears in a **real interactive terminal**. From a non-interactive
-> IDE "Run" console it is skipped and 24h is used automatically.
+> ⚠️ The lookback prompt only appears when `System.console()` is available — i.e. launched with
+> `java -jar` from a **real interactive terminal**. From a forked `mvnw spring-boot:run` process or a
+> non-interactive IDE "Run" console it is skipped and 24h is used automatically.
 
 ---
 
@@ -134,9 +148,9 @@ up — keeps the output clean). Blank/invalid input defaults to 24h.
 Fire a few **distinct** errors across **different services**:
 
 ```powershell
-curl -X POST "http://localhost:8080/trigger-error?type=npe&service=orgbeheer-service"
-curl -X POST "http://localhost:8080/trigger-error?type=state&service=orgbeheer-service&source=VAC-42"
-curl -X POST "http://localhost:8080/trigger-error?type=quota&service=vacature-service"
+curl.exe -X POST "http://localhost:8080/trigger-error?type=npe&service=orgbeheer-service"
+curl.exe -X POST "http://localhost:8080/trigger-error?type=state&service=orgbeheer-service&source=VAC-42"
+curl.exe -X POST "http://localhost:8080/trigger-error?type=quota&service=vacature-service"
 ```
 
 Within one poll interval, LogGuard prints grouped, most-affected-service-first blocks. Note the
@@ -168,7 +182,7 @@ The first LLM call can take a while on `gemma3:4b` (timeout 120s) — that's exp
 Fire the **same** error many times in one call:
 
 ```powershell
-curl -X POST "http://localhost:8080/trigger-error?type=npe&service=orgbeheer-service&count=5"
+curl.exe -X POST "http://localhost:8080/trigger-error?type=npe&service=orgbeheer-service&count=5"
 ```
 
 Next cycle, LogGuard analyses it **once** — there is exactly **one** analysis block (and one LLM
@@ -184,12 +198,12 @@ A known (already-analysed) error that keeps recurring re-surfaces at the configu
 
 1. Establish + analyse the error once (so its analysis is cached). Use a fresh fingerprint:
    ```powershell
-   curl -X POST "http://localhost:8080/trigger-error?type=validation&service=match-service&source=0999.999.999"
+   curl.exe -X POST "http://localhost:8080/trigger-error?type=validation&service=match-service&source=0999.999.999"
    ```
    Wait one cycle for its analysis block (note the `Fingerprint:` hash).
 2. Now flood it to cross 5× **within the 60s window**:
    ```powershell
-   curl -X POST "http://localhost:8080/trigger-error?type=validation&service=match-service&source=0999.999.999&count=4"
+   curl.exe -X POST "http://localhost:8080/trigger-error?type=validation&service=match-service&source=0999.999.999&count=4"
    ```
    Next cycle prints the escalation, reusing the cached root cause:
    ```
@@ -214,7 +228,7 @@ Silence a known-acceptable error with nothing but a text editor.
    LogGuard reloads the file at the start of the **next** cycle (hot-reload, FR-14) — no restart.
 2. Let the error's 60s dedup window lapse (so its next occurrence is treated as new), then trigger it again:
    ```powershell
-   curl -X POST "http://localhost:8080/trigger-error?type=quota&service=vacature-service"
+   curl.exe -X POST "http://localhost:8080/trigger-error?type=quota&service=vacature-service"
    ```
    Instead of an analysis block, LogGuard now prints just the acknowledgement — **no LLM call**:
    ```
@@ -224,7 +238,7 @@ Silence a known-acceptable error with nothing but a text editor.
 3. **Unsuppress** — delete that line from `suppression.txt` (and let the window lapse again):
    ```powershell
    Set-Content suppression.txt ""    # or remove just that line in an editor
-   curl -X POST "http://localhost:8080/trigger-error?type=quota&service=vacature-service"
+   curl.exe -X POST "http://localhost:8080/trigger-error?type=quota&service=vacature-service"
    ```
    The error is analysed normally again (FR-19) — the file is the single source of truth, and
    LogGuard **never writes to it** (FR-16).
@@ -239,7 +253,7 @@ fire 1000 copies in one call (this ships 1000 documents, so give it a moment):
 
 ```powershell
 # (with the error's hash already in suppression.txt)
-curl -X POST "http://localhost:8080/trigger-error?type=state&service=orgbeheer-service&source=VAC-77&count=1000"
+curl.exe -X POST "http://localhost:8080/trigger-error?type=state&service=orgbeheer-service&source=VAC-77&count=1000"
 ```
 
 Next cycle (the first occurrence prints `⚑`, the 1000th crosses the override):
@@ -299,7 +313,7 @@ you can suppress even an error the LLM couldn't analyse.
 Trigger a `validation` error whose message embeds a Belgian KBO number:
 
 ```powershell
-curl -X POST "http://localhost:8080/trigger-error?type=validation&source=0123.456.789"
+curl.exe -X POST "http://localhost:8080/trigger-error?type=validation&source=0123.456.789"
 ```
 
 The KBO (and any email / LDAP DN) is replaced with `[KBO]` / `[EMAIL]` / `[LDAP-DN]` in the payload
@@ -331,7 +345,7 @@ To re-run cleanly:
 - **No output after triggering errors** — confirm the error shipped: the curl response should say
   `shipped N× <ExceptionClass> to OpenSearch`. Then check the index has documents:
   ```powershell
-  curl "http://localhost:9200/logstash-app-openshift-application-springboot_error_*/_count"
+  curl.exe "http://localhost:9200/logstash-app-openshift-application-springboot_error_*/_count"
   ```
 - **Won't-fix `⚑` didn't appear** — the fingerprint still had an **active** dedup record when you
   re-triggered. Suppression takes effect on the next *new* occurrence; wait out the
