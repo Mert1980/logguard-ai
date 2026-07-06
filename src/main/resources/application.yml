@@ -31,12 +31,12 @@ spring:
       read-timeout: ${logguard.ollama.timeout:120s}
 
 logguard:
-  poll-interval: 30s
+  poll-interval: 20s
   # Hard ceiling (seconds) on one poll cycle's transaction (query + all per-error LLM calls) so a large
   # un-deduplicated batch can't starve the connection pool indefinitely (D2 / AR-9).
   poll-transaction-timeout-seconds: 600
-  deduplication-window: 24h
-  escalation-thresholds: [10, 100, 1000]
+  deduplication-window: 60s
+  escalation-thresholds: [5, 100, 1000]
   max-consecutive-poll-failures: 3
   own-code-package-prefixes:
     - be.vdab
