@@ -5,12 +5,32 @@ import be.vdab.logguard.domain.model.LLMAnalysis;
 import be.vdab.logguard.domain.port.out.TerminalOutputPort;
 import org.springframework.stereotype.Component;
 
+import java.time.Instant;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+
 /**
  * The only class permitted to write to {@code System.out} (AR-10). Prints the per-service error block
  * (FR-27/28/30) with the LLM analysis, or "analysis unavailable (reason)" when the LLM was unavailable (FR-24).
  */
 @Component
 public class TerminalOutputAdapter implements TerminalOutputPort {
+
+    /** Matches the topmost stack frame: {@code at <fqcn>.<method>(...)} — group 1 is the FQCN. */
+    private static final Pattern FIRST_FRAME = Pattern.compile("(?m)^\\s*at\\s+([\\w$.]+)\\.[\\w$<>]+\\(");
+
+    /** Cap the unavailability reason so a long/multi-line message can't blow the aligned block. */
+    private static final int MAX_REASON_LENGTH = 100;
+
+    /**
+     * FR-31/32/34/35 status indicators. Defined here (never inline literals) per Story 2.4 AC; the
+     * emitters land in Story 2.6 (DEGRADED/RECOVERED) and Epic 4 (WONT_FIX/ESCALATION), so these are
+     * intentionally unused until then.
+     */
+    static final String DEGRADED = "🔴";
+    static final String RECOVERED = "🟢";
+    static final String WONT_FIX = "⚑";
+    static final String ESCALATION = "⚠️";
 
     @Override
     public void printProgress(String serviceName, int count) {
@@ -22,21 +42,122 @@ public class TerminalOutputAdapter implements TerminalOutputPort {
     }
 
     @Override
-    public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis) {
-        System.out.println("[" + index + "/" + total + "] " + error.exceptionType());
+    public void printAnalysis(int index, int total, ErrorLog error, LLMAnalysis analysis,
+                              String humanLabel, String hash) {
+        System.out.println("[" + index + "/" + total + "] " + header(error));
         if (analysis.llmAvailable()) {
             System.out.println("  Root cause:       " + dash(analysis.rootCause()));
             System.out.println("  Likely location:  " + dash(analysis.likelyLocation()));
             System.out.println("  Suggested action: " + dash(analysis.suggestedAction()));
         } else {
-            System.out.println("  Root cause:       analysis unavailable (" + analysis.unavailabilityReason() + ")");
+            System.out.println("  Root cause:       analysis unavailable (" + reason(analysis.unavailabilityReason()) + ")");
             System.out.println("  Likely location:  -");
             System.out.println("  Suggested action: -");
+        }
+        // FR-18/FR-30: every new-error block ends with the copy-pasteable fingerprint identifier, whether
+        // or not the analysis succeeded. Two spaces before the bracketed hash, square brackets around it.
+        System.out.println("  Fingerprint: " + humanLabel + "  [" + hash + "]");
+        System.out.flush();
+    }
+
+    @Override
+    public void printWontFixLabel(String humanLabel, String hash) {
+        // FR-17/FR-32: standalone acknowledgement line, no brackets around the hash (matches the
+        // suppression-file line format `hash  # HumanLabel`). Uses the WONT_FIX status constant (Story 2.4 AC).
+        System.out.println();
+        System.out.println(WONT_FIX + " Known / Won't Fix: " + humanLabel + "  " + hash);
+        System.out.flush();
+    }
+
+    @Override
+    public void printDegraded(Instant degradationStartedAt, int consecutiveFailures) {
+        String plural = consecutiveFailures == 1 ? "" : "s";
+        System.out.println();
+        System.out.println(DEGRADED + " LOGGUARD DEGRADED — OpenSearch unreachable since "
+                + degradationStartedAt + " (" + consecutiveFailures + " failure" + plural + ")");
+        System.out.flush();
+    }
+
+    @Override
+    public void printRecovery(Instant resumedAt) {
+        System.out.println();
+        System.out.println(RECOVERED + " LOGGUARD RECOVERED — polling resumed at " + resumedAt
+                + ", catching up from checkpoint");
+        System.out.flush();
+    }
+
+    @Override
+    public void printSuppressionUnreadable() {
+        System.out.println();
+        System.out.println(ESCALATION + " Suppression file unreadable — using last known state");
+        System.out.flush();
+    }
+
+    @Override
+    public void printEscalation(String humanLabel, int threshold, Instant firstSeen, LLMAnalysis stored,
+                               boolean wontFix) {
+        // FR-11/FR-12/FR-31: re-notification reusing the cached analysis (no fresh LLM call). Uses the
+        // ESCALATION status constant (Story 2.4 AC — never an inline glyph), same blank-line→message→flush
+        // style as printDegraded/printRecovery. Threshold rendered as a raw integer (METIS decision).
+        System.out.println();
+        if (wontFix) {
+            // Volume override (FR-12): one line, no analysis, a read-only nudge — wontFix is NOT cleared.
+            System.out.println(ESCALATION + " Won't-fix error " + humanLabel + " now seen " + threshold
+                    + "× since " + firstSeen + " — volume is unusually high");
+        } else {
+            // Cooling re-notification (FR-31): two lines, reusing the stored root cause.
+            System.out.println(ESCALATION + " Known error " + humanLabel + " now seen " + threshold
+                    + "× since " + firstSeen);
+            System.out.println("   Root cause: " + storedRootCause(stored));
         }
         System.out.flush();
     }
 
+    /** Cached root cause for an escalation, or "no analysis on file" when none was successfully cached (FR-25). */
+    private static String storedRootCause(LLMAnalysis stored) {
+        if (stored == null || !stored.llmAvailable() || stored.rootCause() == null || stored.rootCause().isBlank()) {
+            return "no analysis on file";
+        }
+        return stored.rootCause().strip();
+    }
+
     private static String dash(String value) {
         return (value == null || value.isBlank()) ? "-" : value.strip();
+    }
+
+    /** One-line, length-capped unavailability reason; blank ⇒ "reason unknown" (never "()"). */
+    private static String reason(String raw) {
+        if (raw == null || raw.isBlank()) {
+            return "reason unknown";
+        }
+        String oneLine = raw.strip().replaceAll("\\s+", " ");
+        return oneLine.length() > MAX_REASON_LENGTH
+                ? oneLine.substring(0, MAX_REASON_LENGTH - 1) + "…"
+                : oneLine;
+    }
+
+    /** FR-30 header: {@code {ExceptionType}@{ClassName}}; drops the {@code @class} suffix if undetectable. */
+    private static String header(ErrorLog error) {
+        String exceptionType = dash(error.exceptionType());   // "-" instead of the literal "null"
+        String throwingClass = throwingClass(error.stackTrace());
+        return throwingClass == null ? exceptionType : exceptionType + "@" + throwingClass;
+    }
+
+    /**
+     * Simple class name of the topmost stack frame (the throw site). Refining this to the first own-code
+     * frame for the won't-fix HumanLabel is Epic 4 ({@code FingerprintService}); the block header here
+     * just needs {@code @{ClassName}}.
+     */
+    private static String throwingClass(String stackTrace) {
+        if (stackTrace == null || stackTrace.isBlank()) {
+            return null;
+        }
+        Matcher matcher = FIRST_FRAME.matcher(stackTrace);
+        if (!matcher.find()) {
+            return null;
+        }
+        String fqcn = matcher.group(1);
+        int lastDot = fqcn.lastIndexOf('.');
+        return lastDot >= 0 ? fqcn.substring(lastDot + 1) : fqcn;
     }
 }

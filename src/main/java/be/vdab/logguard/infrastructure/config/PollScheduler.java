@@ -11,9 +11,11 @@ import org.springframework.stereotype.Component;
  * Fires a poll cycle every {@code logguard.poll-interval} (default 5m), starting shortly after startup.
  * Disabled in tests via {@code logguard.scheduler.enabled=false} so {@code mvn test} does no network I/O.
  *
- * <p>Failures are logged (WARN) and the loop continues — full degradation detection/banner is Story 2.6.
- * The first-run prompt completes via an {@code ApplicationRunner} after scheduling starts, so the first
- * cycle may find no checkpoint yet; {@code PollService} simply skips that cycle.</p>
+ * <p>OpenSearch outages are handled inside {@code PollService} (Story 2.6: failure count, checkpoint
+ * stasis, sticky banner, recovery) — they no longer surface here. This catch is a backstop for any other
+ * unexpected error so one bad cycle never kills the scheduler. The first-run prompt completes via an
+ * {@code ApplicationRunner} after scheduling starts, so the first cycle may find no checkpoint yet;
+ * {@code PollService} simply skips that cycle.</p>
  */
 @Component
 @ConditionalOnProperty(name = "logguard.scheduler.enabled", havingValue = "true", matchIfMissing = true)

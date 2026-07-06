@@ -13,9 +13,12 @@ import org.springframework.core.io.ClassPathResource;
 import org.springframework.stereotype.Component;
 
 import java.io.IOException;
+import java.io.InputStream;
 import java.io.UncheckedIOException;
 import java.nio.charset.StandardCharsets;
 import java.util.List;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 
 /**
  * Calls the local Ollama LLM (Spring AI {@link ChatClient}) to analyse an error and returns the
@@ -64,12 +67,19 @@ public class LlmAdapter implements LlmPort {
         }
     }
 
-    /** Maps the LLM's three-field reply to the domain result; null/blank root cause ⇒ malformed (FR-24). */
+    /** Maps the LLM's three-field reply to the domain result; ANY null/blank field ⇒ malformed (FR-23/24). */
     static LLMAnalysis toAnalysis(RootCauseAnalysis result) {
-        if (result == null || result.rootCause() == null || result.rootCause().isBlank()) {
+        if (result == null
+                || isBlank(result.rootCause())
+                || isBlank(result.likelyLocation())
+                || isBlank(result.suggestedAction())) {
             return LLMAnalysis.unavailable("malformed response");
         }
         return LLMAnalysis.available(result.rootCause(), result.likelyLocation(), result.suggestedAction());
+    }
+
+    private static boolean isBlank(String value) {
+        return value == null || value.isBlank();
     }
 
     private String buildPayload(ErrorLog error) {
@@ -82,27 +92,44 @@ public class LlmAdapter implements LlmPort {
                 Stack trace (own-code frames only):
                 %s
                 """.formatted(
-                error.exceptionType(),
-                error.serviceName(),
-                error.appName(),
-                error.vdabAuthorization(),
-                sanitizer.sanitize(error.errorMessage()),
+                orUnknown(error.exceptionType()),
+                orUnknown(error.serviceName()),
+                orUnknown(error.appName()),
+                orUnknown(error.vdabAuthorization()),
+                orUnknown(sanitizer.sanitize(error.errorMessage())),
                 sanitizer.sanitize(ownCodeFrames(error.stackTrace())));
     }
 
-    /** Keep the exception header line plus any frame from a configured own-code package (FR-20). */
+    /** Null/blank field ⇒ "unknown" so the LLM payload never carries the literal string "null". */
+    private static String orUnknown(String value) {
+        return (value == null || value.isBlank()) ? "unknown" : value;
+    }
+
+    /** Matches a stack frame line {@code at <fqcn>.<method>(...)}; group 1 is the frame's FQCN. */
+    private static final Pattern FRAME = Pattern.compile("^\\s*at\\s+([\\w$.]+)\\.[\\w$<>]+\\(");
+
+    /** Keep the exception header line plus any frame whose class is in a configured own-code package (FR-20). */
     private String ownCodeFrames(String stackTrace) {
         if (stackTrace == null || stackTrace.isBlank()) {
             return "";
         }
+        List<String> prefixes = ownCodePrefixes.stream()
+                .filter(p -> p != null && !p.isBlank())
+                .toList();
         String[] lines = stackTrace.split("\\R");
         StringBuilder kept = new StringBuilder();
-        if (lines.length > 0) {
-            kept.append(lines[0]).append('\n');
-        }
-        for (String line : lines) {
-            if (ownCodePrefixes.stream().anyMatch(line::contains)) {
-                kept.append(line.trim()).append('\n');
+        // Always keep the first line (the exception header: throwable type + message).
+        kept.append(lines[0].strip()).append('\n');
+        // Keep only "at <fqcn>" frames whose class belongs to an own-code package — match the parsed
+        // class (not substring-anywhere) so prefixes in messages don't false-match, and start at index 1
+        // so the header line is never re-appended.
+        for (int i = 1; i < lines.length; i++) {
+            Matcher matcher = FRAME.matcher(lines[i]);
+            if (matcher.find()) {
+                String fqcn = matcher.group(1);
+                if (prefixes.stream().anyMatch(p -> fqcn.equals(p) || fqcn.startsWith(p + "."))) {
+                    kept.append(lines[i].strip()).append('\n');
+                }
             }
         }
         return kept.toString();
@@ -118,9 +145,8 @@ public class LlmAdapter implements LlmPort {
     }
 
     private static String loadSystemPrompt() {
-        try {
-            return new String(new ClassPathResource(PROMPT_RESOURCE).getInputStream().readAllBytes(),
-                    StandardCharsets.UTF_8);
+        try (InputStream in = new ClassPathResource(PROMPT_RESOURCE).getInputStream()) {
+            return new String(in.readAllBytes(), StandardCharsets.UTF_8);
         } catch (IOException e) {
             throw new UncheckedIOException("Cannot load " + PROMPT_RESOURCE, e);
         }

@@ -35,7 +35,9 @@
 # - Dev moves story to 'review', then runs code-review (fresh context, different LLM recommended)
 
 generated: 2026-06-17
-last_updated: 2026-06-17 (story 2.3 implemented → review)
+last_updated: 2026-07-01 (Story 4.1 code-reviewed → done; epic-4 → DONE (all of 4.1-4.5 implemented +
+                          code-reviewed). Remaining non-done across project: 1.1/1.2/2.1/2.2/2.3 → review;
+                          2.6 → review. Tests green: 86 pass / 1 skipped.)
 project: logguard-ai
 project_key: NOKEY
 tracking_system: file-system
@@ -53,22 +55,106 @@ development_status:
   2-1-scaffold-logguard-ai-and-configure-project-infrastructure: review
   2-2-pollcheckpoint-persistence-and-first-run-lookback-prompt: review
   2-3-opensearch-error-polling-adapter: review
-  2-4-terminal-output-service-grouped-count-ordered-per-error-block: backlog
-  2-5-poll-loop-with-checkpoint-advance-invariant: backlog
-  2-6-degradation-detection-sticky-banner-and-recovery-with-auto-backlog: backlog
+  # 2.4: code review done. Status-indicator constants DEGRADED/RECOVERED/WONT_FIX/ESCALATION now defined
+  # (D3); null exception-type header guarded (P3); unavailability-reason rendering hardened — one line,
+  # length-capped, blank → "reason unknown" (P5). The four constants stay unused until 2.6/Epic 4 emit them.
+  2-4-terminal-output-service-grouped-count-ordered-per-error-block: done
+  # 2.5: code review done. Poll-cycle transaction now bounded by a configurable timeout (D2); checkpoint
+  # advances to pollStart minus a refresh safety-lag so refresh-lagged errors aren't skipped (D1).
+  # Accepted deviation: initialDelay=2s not AR-12's 0 (intentional — lets the first-run prompt finish) (D4).
+  2-5-poll-loop-with-checkpoint-advance-invariant: done
+  # 2.6: implemented (FR-33/34/35/36). OpenSearch outage increments consecutive_poll_failures with
+  # checkpoint stasis; at max_consecutive_poll_failures it enters DegradedState and reprints the sticky
+  # 🔴 banner each cycle; first successful poll prints 🟢 RECOVERED, clears state, and replays the missed
+  # backlog. Uses the D3 status constants. Covered by PollServiceTest (7 cases). Pending code review.
+  2-6-degradation-detection-sticky-banner-and-recovery-with-auto-backlog: review
   epic-2-retrospective: optional
 
   # Epic 3: LLM Setup & Integration
-  epic-3: backlog
-  3-1-llm-prompt-validation-gate-tenantdatasanitizer-payload-builder-and-manual-prompt-test: backlog
-  3-2-ollama-llm-adapter-with-structured-output-and-failure-fallback: backlog
+  epic-3: done
+  # 3.1: code review done. LDAP-DN redaction broadened — non-cn= leads (uid=), spaces-after-comma, and
+  # multi-valued RDNs now stripped, closing the FR-21 PII leak (P4). AR-18 manual prompt-validation gate
+  # remains WAIVED by team decision 2026-06-24; live demo output is the lightweight empirical check.
+  3-1-llm-prompt-validation-gate-tenantdatasanitizer-payload-builder-and-manual-prompt-test: done
+  # 3.2: code review done. logguard.ollama.timeout now wired to the Ollama HTTP client via
+  # spring.http.client.read-timeout (P1); own-code stack-frame selection fixed — parse the frame FQCN
+  # instead of substring-match, no header duplication, blank prefixes filtered (P2); null payload fields
+  # guarded to "unknown" (P3); system-prompt InputStream closed via try-with-resources (P6).
+  3-2-ollama-llm-adapter-with-structured-output-and-failure-fallback: done
+  # epic-3 → done: both listed stories (3.1, 3.2) complete; retrospective remains optional.
   epic-3-retrospective: optional
 
   # Epic 4: Fingerprint Deduplication & Won't-Fix Suppression
-  epic-4: backlog
-  4-1-errorfingerprint-computation-with-owncodeframe-detection-and-line-number-asymmetry: backlog
-  4-2-deduplicationrecord-persistence-three-state-gate-and-llm-analysis-caching: backlog
-  4-3-suppressionfile-adapter-with-hot-reload-ordering-guarantee-and-read-only-authority: backlog
-  4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: backlog
-  4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: backlog
+  # epic-4 → done: all five stories (4.1-4.5) implemented and code-reviewed. Retrospective optional.
+  epic-4: done
+  # 4.1: implemented (FR-6/FR-7). ErrorFingerprint record (+ hash() = SHA-256 → first 8 hex) and pure-domain
+  # FingerprintService: own-code (be.vdab) frame detection reusing the 3.2 FQCN parser, framework-frame
+  # fallback (topmost frame), and the throwing_method (line KEPT) vs stack_trace_sequence (lines STRIPPED)
+  # asymmetry. Code review done (Opus 4.8, 3 adversarial lenses): all 11 ACs PASS. 1 patch applied — FRAME
+  # regex now accepts an optional Java 9+ module prefix ((?:[\w$.]+/)?) so all-module-prefixed framework-only
+  # traces anchor on the topmost frame instead of collapsing to a degenerate fingerprint (closes the AC#5/FR-7
+  # gap), +2 tests. 2 deferred (LlmAdapter shares the gap; Caused-by root-cause anchoring), 6 dismissed.
+  # Suite 86 pass / 1 skipped.
+  4-1-errorfingerprint-computation-with-owncodeframe-detection-and-line-number-asymmetry: done
+  # 4.2: code review done (Sonnet 4.6, 3 adversarial lenses). Implemented FR-8/9/10/25 + NFR-4:
+  # DeduplicationRecord + V2 migration + JPA entity/adapter (upsert by fingerprint_hash, expiry filter) +
+  # LlmAnalysisJsonConverter (Jackson 3 → stored_analysis CLOB); two-phase three-state gate in PollService;
+  # FingerprintService wired. Review fixes applied: failed-analysis not cached (no window poisoning),
+  # Phase-2 cache-miss logs, converter read hardened, across-cycle NFR-4 + failed-analysis tests added.
+  # 6 low-sev items deferred (see deferred-work.md). Suite 52 pass / 1 skipped. Scope deferred to later
+  # stories: suppression consult (4.3/4.4), WontFix label + Fingerprint output line (4.4), escalation (4.5).
+  4-2-deduplicationrecord-persistence-three-state-gate-and-llm-analysis-caching: done
+  # 4.3: implemented (FR-14/15/16, NFR-6). SuppressionFileAdapter now really reads/parses suppression.txt
+  # each cycle (hot-reload): token = substring before first '#', stripped, into a LinkedHashSet (blanks/
+  # comments ignored, dups collapsed). Absent file → empty set, no warning; unreadable (IOException/RTE) →
+  # keeps lastKnown, prints ESCALATION ⚠️ "Suppression file unreadable — using last known state", never
+  # throws. Strictly read-only (no write API in any branch incl. catch). Added TerminalOutputPort
+  # .printSuppressionUnreadable. Returned set still discarded by PollService (consuming = 4.4). New hermetic
+  # SuppressionFileAdapterTest (4 cases). Code review done (Opus 4.8, 3 adversarial lenses): all ACs #1–#10
+  # PASS. Patches applied — loadHashes now returns an immutable Set.copyOf snapshot (no live-reference leak
+  # to a future 4.4 consumer); stderr diagnostic on read failure (distinct from the FR-15 line); stale
+  # SuppressionFilePort Javadoc refreshed. 1 item deferred to 4.4: absent-file wipes lastKnown vs unreadable
+  # keeps it — atomic-save (delete-recreate) editors could momentarily un-suppress once the set is consumed.
+  4-3-suppressionfile-adapter-with-hot-reload-ordering-guarantee-and-read-only-authority: done
+  # 4.4: implemented (FR-8 won't-fix-from-birth + FR-17/32 ⚑ label, FR-18/30 Fingerprint output line,
+  # FR-19 unsuppression, computed HumanLabel). PollService.gateAndCollectNew now consumes the 4.3 suppression
+  # set (loaded-and-discarded until now): suppressed-new → wontFix=true record + ⚑ label once, no LLM/block;
+  # active-wontFix-still-suppressed/cooling → silent increment; hash removed in-window → clearWontFix()+
+  # increment, silent; expired re-encounter → no special branch (4.2 expiry filter). HumanLabel COMPUTED from
+  # the fingerprint (not the frozen-port file comment); METIS chose the FULL simple name
+  # (NullPointerException@LabelV2Config:21), not the NPE acronym. Atomic-save un-suppression window ACCEPTED
+  # by METIS (no 4.3 change; noted in deferred-work.md). printWontFixLabel + Fingerprint line on
+  # TerminalOutputPort; clearWontFix() on the record. No constructor/schema/config/wiring change. New
+  # ErrorFingerprintTest + TerminalOutputAdapterTest + 6 PollServiceTest cases. Suite 70 pass / 1 skipped.
+  # Code review done (Opus 4.8, 3 adversarial lenses): all 10 ACs PASS. 1 patch applied — humanLabel()
+  # degenerate-guard hardened (compare against STRIPPED exceptionType so a whitespace-padded type collapses
+  # instead of splitting into a garbage @package suffix; simpleExceptionName() falls back to UnknownError on
+  # an empty simple name), +2 ErrorFingerprintTest cases. 2 items deferred to deferred-work.md (won't-fix
+  # same-batch label leans on transactional autoflush, not a local seen-set; no seeded-expired wontFix AC#3
+  # unit test — fake ignores expiry). 3 findings dismissed. Suite 72 pass / 1 skipped.
+  4-4-wont-fix-suppression-integration-and-fingerprint-identifier-in-terminal-output: done
+  # 4.5: story drafted (FR-11 cooling escalation re-notifications at configurable thresholds reusing the
+  # stored analysis — no fresh LLM call; FR-12 won't-fix 1000× volume override as a read-only nudge that does
+  # NOT clear wontFix; FR-13 fires during backlog catchup). Authoritative algorithm from spec
+  # CheckEscalationThreshold/DeliverEscalation: fire the smallest threshold > lastNotifiedThreshold that the
+  # count has reached (one per +1 increment → in sequence); lastNotifiedThreshold advances for BOTH states but
+  # delivers only when !wontFix OR threshold==1000. Adds printEscalation to TerminalOutputPort (⚠️ ESCALATION
+  # constant) + withLastNotifiedThreshold() wither; threads escalation-thresholds into the PollService
+  # constructor (new param — ripples to DomainServiceConfig + PollServiceTest). NO schema/config/LogguardProperties
+  # change (field + YAML key already present). Open (non-blocking) for METIS: threshold rendering (raw 1000× vs
+  # 1,000×); literal-1000 override threshold vs largest-configured.
+  # 4.5 IMPLEMENTED via dev-story: PollService.incrementAndEscalate fires the smallest configured threshold
+  # above lastNotifiedThreshold the count reached, reusing storedAnalysis (no LLM call); won't-fix delivers the
+  # override only at literal 1000 (wontFix NOT cleared), 10/100 advance the threshold silently; backlog catchup
+  # fires in sequence (no special branch). printEscalation on the port/adapter (ESCALATION constant; cooling
+  # 2-line + won't-fix 1-line) + DeduplicationRecord.withLastNotifiedThreshold(); escalation-thresholds threaded
+  # into the PollService constructor via DomainServiceConfig (field + YAML key already existed — no
+  # schema/config/LogguardProperties change). METIS decisions: raw-integer rendering; literal-1000 override.
+  # +7 PollServiceTest, +3 TerminalOutputAdapterTest. Suite 82 pass / 1 skipped.
+  # Code review done (Opus 4.8, 3 adversarial lenses): all 10 ACs PASS. 1 patch applied — threshold selector
+  # .min() -> .max() so a count that jumped multiple rungs (e.g. escalation-thresholds reconfigured between
+  # restarts) reports the true milestone (1000x) instead of a misleading lower rung (METIS chose harden over
+  # spec-literal min), +2 jump tests. 1 item deferred (no non-positive-threshold config validation), 6
+  # dismissed. Suite 84 pass / 1 skipped.
+  4-5-escalation-threshold-re-notifications-with-wont-fix-volume-override: done
   epic-4-retrospective: optional
