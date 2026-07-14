@@ -24,8 +24,23 @@ public record LogguardProperties(
         @DefaultValue("./suppression.txt") String suppressionFilePath,
         @DefaultValue Ollama ollama,
         @DefaultValue OpenSearch opensearch,
-        @DefaultValue H2 h2
+        @DefaultValue H2 h2,
+        @DefaultValue GoogleChat googleChat
 ) {
+
+    /**
+     * Google Chat delivery: when {@code enabled}, the {@code GoogleChatOutputAdapter} becomes the primary
+     * {@link be.vdab.logguard.domain.port.out.TerminalOutputPort} and every notification is POSTed to the
+     * incoming-webhook {@code webhookUrl} instead of {@code System.out}. The URL carries a space key/token
+     * secret, so it lives in {@code application.yml} (overridable via {@code LOGGUARD_GOOGLE_CHAT_WEBHOOK_URL})
+     * — never a hard-coded default.
+     */
+    public record GoogleChat(
+            @DefaultValue("false") boolean enabled,
+            @DefaultValue("") String webhookUrl,
+            @DefaultValue("10s") Duration timeout
+    ) {
+    }
 
     public record Ollama(
             @DefaultValue("http://localhost:11434") String baseUrl,

@@ -54,3 +54,10 @@ logguard:
     refresh-window: 5s
   h2:
     data-dir: ./data
+  google-chat:
+    # When true, every notification is POSTed to the incoming webhook below instead of the terminal
+    # (the GoogleChatOutputAdapter becomes the primary TerminalOutputPort).
+    enabled: true
+    # Carries a space key/token secret — override in the environment with LOGGUARD_GOOGLE_CHAT_WEBHOOK_URL.
+    webhook-url: ${LOGGUARD_GOOGLE_CHAT_WEBHOOK_URL:}
+    timeout: 10s
