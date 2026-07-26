@@ -49,10 +49,25 @@ public record LogguardProperties(
     ) {
     }
 
+    /**
+     * OpenSearch connection. Defaults target the local Docker instance (plain HTTP, no auth/TLS — Story 1.1).
+     * A secured production cluster is reached by overriding {@code baseUrl} with an {@code https://} URL and
+     * supplying {@code username}/{@code password}; the client then wires basic-auth and TLS. Credentials carry
+     * secrets, so — like {@link GoogleChat#webhookUrl} — they have blank defaults and come from the environment
+     * ({@code LOGGUARD_OPENSEARCH_USERNAME} / {@code LOGGUARD_OPENSEARCH_PASSWORD}), never a hard-coded value.
+     * {@code truststorePath} is optional and only needed for a private/self-signed CA; blank uses JDK default
+     * trust. {@code connectTimeout}/{@code socketTimeout} apply to the transport when connecting over https.
+     */
     public record OpenSearch(
             @DefaultValue("http://localhost:9200") String baseUrl,
             @DefaultValue("logstash-app-openshift-application-springboot_error_*") String indexPattern,
-            @DefaultValue("5s") Duration refreshWindow
+            @DefaultValue("5s") Duration refreshWindow,
+            @DefaultValue("") String username,
+            @DefaultValue("") String password,
+            @DefaultValue("") String truststorePath,
+            @DefaultValue("") String truststorePassword,
+            @DefaultValue("5s") Duration connectTimeout,
+            @DefaultValue("10s") Duration socketTimeout
     ) {
     }
 

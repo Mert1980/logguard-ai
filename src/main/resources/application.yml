@@ -31,12 +31,12 @@ spring:
       read-timeout: ${logguard.ollama.timeout:120s}
 
 logguard:
-  poll-interval: 20s
+  poll-interval: 30s
   # Hard ceiling (seconds) on one poll cycle's transaction (query + all per-error LLM calls) so a large
   # un-deduplicated batch can't starve the connection pool indefinitely (D2 / AR-9).
   poll-transaction-timeout-seconds: 600
-  deduplication-window: 60s
-  escalation-thresholds: [5, 100, 1000]
+  deduplication-window: 24h
+  escalation-thresholds: [10, 100, 1000]
   max-consecutive-poll-failures: 3
   own-code-package-prefixes:
     - be.vdab
@@ -46,12 +46,26 @@ logguard:
     model: gemma3:4b
     timeout: 120s
   opensearch:
-    base-url: http://localhost:9200
+    # Default is the local Docker instance (plain HTTP, no auth — Story 1.1). Point at a secured
+    # production cluster purely via environment variables — no profile files. Set LOGGUARD_OPENSEARCH_BASE_URL
+    # to an https:// URL plus the username/password below; the client wires basic-auth + TLS only when set.
+    base-url: ${LOGGUARD_OPENSEARCH_BASE_URL:http://localhost:9200}
     # Matches the index the companion app (Story 1.2) writes to — Story 2.3 needs no change.
-    index-pattern: logstash-app-openshift-application-springboot_error_*
+    index-pattern: ${LOGGUARD_OPENSEARCH_INDEX_PATTERN:logstash-app-openshift-application-springboot_error_*}
     # Re-scan this window each cycle so errors made searchable after the query (OpenSearch refresh lag)
     # are not skipped; Epic 4 dedup removes the resulting harmless double-fetch (D1).
     refresh-window: 5s
+    # Basic-auth credentials for a secured cluster. Blank = no auth (local). These carry secrets, so they
+    # have no hard-coded default — supply via the environment (read-only service account recommended).
+    username: ${LOGGUARD_OPENSEARCH_USERNAME:}
+    password: ${LOGGUARD_OPENSEARCH_PASSWORD:}
+    # Optional truststore for a private/self-signed CA (common on OpenShift). Blank = JDK default trust
+    # (works for public-CA https). Point at a .p12/.jks holding the cluster's CA certificate.
+    truststore-path: ${LOGGUARD_OPENSEARCH_TRUSTSTORE_PATH:}
+    truststore-password: ${LOGGUARD_OPENSEARCH_TRUSTSTORE_PASSWORD:}
+    # Applied to the transport only when connecting over https (prod); the local plain-HTTP path is unchanged.
+    connect-timeout: 5s
+    socket-timeout: 10s
   h2:
     data-dir: ./data
   google-chat:
